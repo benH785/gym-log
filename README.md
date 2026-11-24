@@ -12,13 +12,13 @@ Your log is stored **on the phone only** (browser storage for this site). Nothin
 
 ### Two gyms
 
-Every exercise has its own **Work / Home** switch, so a lunchtime session at work and an evening one at home can sit in the same day. An exercise you haven't switched or logged today follows the gym you last used: flip one exercise to Home and the untouched ones go with it, while anything you've already set or logged today keeps its gym. Choices made on individual exercises last for the day.
+The gym is chosen in each exercise's **Swap** list. Machine and cable exercises (anything whose kit includes `machines` or `cable`) are listed twice, e.g. "Hack squat · Work" and "Hack squat · Home", because their stacks are calibrated differently: each version keeps its own pre-filled weights, "last top set" line and add-load hints, with the other gym's latest top set shown underneath for reference. Free-weight exercises are listed once and share their history between gyms. The card shows a **Work machine** / **Home machine** tag.
 
-Machines are calibrated differently, so pre-filled weights, the "last top set" line and the add-load hints only use sets from the exercise's current gym. The other gym's latest top set is shown underneath, for reference only. The programme's plan weights are work-gym numbers, so at home an exercise starts blank until you've logged it there once.
+What you pick stays picked until you change it; with no pick, an exercise shows whatever you last logged for it, else the plan exercise at Work. Picking only redraws that card. The programme's plan weights are work-gym numbers, so a machine exercise's Home version starts blank until you've logged it there once.
 
 ### Your own exercises
 
-**Swap > + Add your own…** on any exercise (or **Settings > My exercises > Add an exercise**): name it, tick the gyms that have it, and optionally make it the default there. After a one-off swap, **Always use** makes that choice the default at the current gym. Settings lists every default and custom exercise, with **Back to plan** and **Remove**.
+**Swap > + Add your own…** on any exercise (or **Settings > My exercises > Add an exercise**): name it, say whether it's a machine or cable (then it gets Work and Home versions), and optionally switch to it straight away. Settings lists your own exercises with **Remove**.
 
 ## What's in it
 
@@ -47,12 +47,11 @@ Logged sets are keyed by exercise id (`bench_0` = bench, top set), so keep exist
   "weeks": { "2026-11-09": { "sets": { "bench_0": { "w": 120, "r": 7, "x": null, "v": "Barbell bench press", "d": "2026-11-10", "loc": "work" } } } },
   "settings": {
     "blockStart": "2026-11-09",
-    "homeKit": ["dumbbells", "bench", "machines"],
-    "custom": { "hack": [{ "n": "Belt squat", "at": ["work", "home"] }] },
-    "defaults": { "work": { "hack": "Belt squat" }, "home": { "hack": "Belt squat" } }
+    "custom": { "hack": [{ "n": "Belt squat", "machine": true }] },
+    "choice": { "hack": { "v": "Belt squat", "loc": "home" }, "bench": { "v": "DB bench press", "loc": null } }
   },
   "lastBackup": "2026-11-10T12:00:00.000Z"
 }
 ```
 
-`w` kg (added kg for pull-ups), `r` reps, `x` partials or rest-pause reps on the top set, `v` exercise actually done (plan, swap or your own), `d` date logged, `t` time logged (from 1.2), `loc` work or home. Weeks are keyed by their Monday. Exercise history is matched on `v` and `loc`, so the same exercise shares history wherever it's used, but each gym keeps its own weights. `custom` holds exercises you added per slot; `defaults` holds the exercise used by default at each gym.
+`w` kg (added kg for pull-ups), `r` reps, `x` partials or rest-pause reps on the top set, `v` exercise actually done (plan, swap or your own), `d` date logged, `t` time logged (from 1.2), `loc` work or home. Weeks are keyed by their Monday. Exercise history is matched on `v` and `loc`, so the same exercise shares history wherever it's used, but each gym keeps its own weights. `loc` is `work`/`home` for machine and cable exercises and `null` for free weights (sets from 1.0–1.2 always carry a gym). Machine history is matched on `v` and `loc`; free-weight history on `v` only. `custom` holds exercises you added per slot; `choice` holds the exercise and gym picked in Swap.

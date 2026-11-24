@@ -1,9 +1,9 @@
 /* Stretch/Contraction Log — app logic. All data lives on this phone (localStorage), with JSON backup/restore. */
 (function () {
 "use strict";
-const APP_VERSION = "1.2.0";
+const APP_VERSION = "1.3.0";
 const P = window.SC_PLAN;
-const { PLAN, KIT, DEFAULT_HOME, EXT, TIER, TIER_H } = P;
+const { PLAN, EXT, TIER, TIER_H } = P;
 const DEFAULT_START = P.DEFAULT_START;
 const WORK_S = 45; // seconds per working set, for time estimates
 
@@ -39,19 +39,30 @@ const daysSince = isoTs => isoTs ? Math.floor((Date.now() - new Date(isoTs).getT
 const isStandalone = () => (window.matchMedia && matchMedia("(display-mode: standalone)").matches) || navigator.standalone === true;
 const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 const ICON_TICK = '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4.5 10.5 3.5 3.5 7.5-8"/></svg>';
+const ICON_CHEV = '<svg class="chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3.5 6 4.5 4.5L12.5 6"/></svg>';
 const LOCN = { work: "Work", home: "Home" }, LOCL = { work: "work", home: "home" };
 const otherLoc = l => l === "work" ? "home" : "work";
-const ICON_CHEV = '<svg class="chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3.5 6 4.5 4.5L12.5 6"/></svg>';
+// Machines and cable stacks are calibrated differently at each gym; free weights are the same everywhere.
+const isMachineKit = k => (k || []).some(t => t.split("|").some(x => x === "machines" || x === "cable"));
 
 /* ================= storage (this phone) ================= */
 const KEY = "sc44:data", UIKEY = "sc44:ui";
 function normalise(d){
   if (!d || typeof d !== "object") d = {};
-  const settings = Object.assign({ blockStart: DEFAULT_START, homeKit: null }, d.settings || {});
-  // your own exercises per slot: { slotId: [{ n, at: ["work","home"] }] }; defaults per gym: { work: { slotId: name }, home: {...} }
+  const settings = Object.assign({ blockStart: DEFAULT_START }, d.settings || {});
+  // your own exercises per slot: { slotId: [{ n, machine }] }
   settings.custom = (settings.custom && typeof settings.custom === "object") ? settings.custom : {};
-  const df = (settings.defaults && typeof settings.defaults === "object") ? settings.defaults : {};
-  settings.defaults = { work: df.work || {}, home: df.home || {} };
+  // the exercise you picked in Swap, per slot: { slotId: { v: name, loc: "work" | "home" | null } }
+  settings.choice = (settings.choice && typeof settings.choice === "object") ? settings.choice : {};
+  // 1.1–1.2 kept per-gym defaults: carry them over as your current pick
+  if (settings.defaults && typeof settings.defaults === "object") {
+    const w = settings.defaults.work || {}, h = settings.defaults.home || {};
+    Object.keys(Object.assign({}, h, w)).forEach(id => {
+      if (!settings.choice[id]) settings.choice[id] = w[id] ? { v: w[id], loc: "work" } : { v: h[id], loc: "home" };
+    });
+    delete settings.defaults;
+  }
+  delete settings.homeKit;
   return {
     v: 1,
     weeks: (d.weeks && typeof d.weeks === "object") ? d.weeks : {},
@@ -61,19 +72,16 @@ function normalise(d){
 }
 function loadData(){ try { return normalise(JSON.parse(localStorage.getItem(KEY))); } catch (e) { return normalise(null); } }
 let D = loadData();
-let storageOK = true;
 function save(){
-  try { localStorage.setItem(KEY, JSON.stringify(D)); storageOK = true; }
-  catch (e) { storageOK = false; toast("Couldn't save on this phone. Export a backup from Settings now."); }
+  try { localStorage.setItem(KEY, JSON.stringify(D)); }
+  catch (e) { toast("Couldn't save on this phone. Export a backup from Settings now."); }
 }
-const UI = Object.assign({ tab: "week", show: "all", budget: 0, collapsed: {}, variant: {}, installHidden: false, exLoc: {}, lastGym: null },
+const UI = Object.assign({ tab: "week", show: "all", budget: 0, collapsed: {}, installHidden: false },
   (() => { try { return JSON.parse(localStorage.getItem(UIKEY)) || {}; } catch (e) { return {}; } })());
-// Gym per exercise: exLoc holds the gyms you picked on individual exercises today; lastGym is the gym you last picked or logged at.
-if (!UI.lastGym) UI.lastGym = UI.loc === "home" ? "home" : "work"; // carry over the old top-of-screen switch
-delete UI.loc;
-(() => { const td = todayISO(); for (const k in UI.exLoc) if (!UI.exLoc[k] || UI.exLoc[k].day !== td) delete UI.exLoc[k]; })();
+["loc", "exLoc", "lastGym", "variant"].forEach(k => delete UI[k]); // gym switches from 1.1–1.2
 const saveUI = () => { try { localStorage.setItem(UIKEY, JSON.stringify(UI)); } catch (e) {} };
 saveUI();
+save();
 let persistAsked = false;
 function askPersist(){
   if (persistAsked) return; persistAsked = true;
@@ -81,32 +89,11 @@ function askPersist(){
 }
 
 const S = { week: thisWeek(), drafts: {} };
-let HIST = {};
+let HIST = {}, PICK = {};
 
 /* ================= derived ================= */
 const weekNo = wk => Math.round((parseISO(wk) - mondayOf(parseISO(D.settings.blockStart || DEFAULT_START))) / 864e5 / 7) + 1;
 const isDeload = wk => { const n = weekNo(wk); return n === 6 || n === 12; };
-const homeKit = () => D.settings.homeKit || DEFAULT_HOME;
-function kitOK(k, loc){
-  if (loc === "work") return true;
-  const have = homeKit();
-  return (k || []).every(tag => tag.split("|").some(t => have.includes(t)));
-}
-const variantsFor = slot => [{ n: slot.name, k: slot.kit, primary: true }].concat(slot.swaps || [],
-  (D.settings.custom[slot.id] || []).map(c => ({ n: c.n, at: c.at, custom: true })));
-// your own exercises are available at the gyms you ticked; built-in ones follow the kit list
-const vOK = (v, loc) => v.at ? v.at.includes(loc) : kitOK(v.k, loc);
-const slotAvailable = (slot, loc) => { loc = loc || gymOf(slot); return variantsFor(slot).some(v => vOK(v, loc)); };
-const defaultFor = (slot, loc) => (D.settings.defaults[loc] || {})[slot.id] || null;
-// Which gym an exercise is at: the gym you picked on it today, else where you logged it today, else the gym you last used.
-function gymOf(slot){
-  const td = todayISO(), m = UI.exLoc[slot.id];
-  if (m && m.day === td) return m.loc;
-  const now = setsOf(thisWeek()); let best = null;
-  for (let i = 0; i < slot.w.length; i++) { const e = now[slot.id + "_" + i]; if (e && e.d === td && (!best || (e.t || "") >= (best.t || ""))) best = e; }
-  if (best) return best.loc || "work";
-  return UI.lastGym || "work";
-}
 const target = slot => isDeload(S.week) ? 1 : slot.w.length;
 const setsOf = wk => (D.weeks[wk] && D.weeks[wk].sets) || {};
 function doneCount(slot, sets){
@@ -116,27 +103,45 @@ function doneCount(slot, sets){
 }
 const remaining = (slot, sets) => target(slot) - doneCount(slot, sets);
 const slotSecs = (slot, sets) => remaining(slot, sets) * (WORK_S + slot.rest);
-const variantKey = (slot, loc) => S.week + ":" + (loc || gymOf(slot)) + ":" + slot.id;
 
-function chosenVariant(slot, sets, loc){
-  loc = loc || gymOf(slot);
-  const here = v => vOK(v, loc);
-  const manual = UI.variant[variantKey(slot, loc)];
-  const vs = variantsFor(slot);
-  if (manual && vs.some(v => v.n === manual)) return manual;
-  const def = defaultFor(slot, loc), dv = def && vs.find(v => v.n === def);
-  if (dv && here(dv)) return def;
-  sets = sets || setsOf(S.week);
-  let lastLogged = null; // what you did at this gym earlier this week
-  for (let i = 0; i < slot.w.length; i++) { const e = sets[slot.id + "_" + i]; if (e && e.v && (e.loc || "work") === loc) lastLogged = e.v; }
-  const lv = lastLogged && vs.find(v => v.n === lastLogged);
-  if (lv && here(lv)) return lastLogged;
-  const first = vs.find(here);
-  return (first || vs[0]).n;
+// Exercises available for a slot: the plan's, its built-in swaps, then your own.
+function variantsFor(slot){
+  return [{ n: slot.name, machine: isMachineKit(slot.kit), primary: true }]
+    .concat((slot.swaps || []).map(s => ({ n: s.n, machine: isMachineKit(s.k), note: s.note })),
+      (D.settings.custom[slot.id] || []).map(c => ({ n: c.n, machine: c.machine == null ? isMachineKit(slot.kit) : !!c.machine, custom: true })));
+}
+// What Swap offers: machines and cables once per gym, everything else once.
+function optionsFor(slot){
+  const out = [];
+  variantsFor(slot).forEach(v => {
+    if (v.machine) ["work", "home"].forEach(loc => out.push({ v: v.n, loc, primary: !!v.primary, note: v.note }));
+    else out.push({ v: v.n, loc: null, primary: !!v.primary, note: v.note });
+  });
+  return out;
+}
+const optKey = o => (o.loc || "") + "|" + o.v;
+function latestLog(slot){
+  let best = null;
+  Object.keys(D.weeks).forEach(wk => {
+    const sets = setsOf(wk);
+    for (let i = 0; i < slot.w.length; i++) {
+      const e = sets[slot.id + "_" + i];
+      if (e && e.v && (!best || (e.d || wk) + (e.t || "") > (best.d || "") + (best.t || ""))) best = e;
+    }
+  });
+  return best;
+}
+// The exercise (and gym, for machines) a slot is set to: your pick in Swap, else what you last logged for it, else the plan at work.
+function chosen(slot){
+  if (PICK[slot.id]) return PICK[slot.id];
+  const opts = optionsFor(slot);
+  const match = c => c && opts.find(o => o.v === c.v && (o.loc === null || o.loc === (c.loc || "work")));
+  const o = match(D.settings.choice[slot.id]) || match(latestLog(slot)) || opts[0];
+  return (PICK[slot.id] = o);
 }
 
 function buildHist(){
-  HIST = {};
+  HIST = {}; PICK = {};
   Object.keys(D.weeks).sort().reverse().forEach(wk => {
     const sets = setsOf(wk), dl = isDeload(wk);
     Object.keys(sets).sort().forEach(k => {
@@ -146,26 +151,27 @@ function buildHist(){
     });
   });
 }
-// Machines are calibrated differently at each gym, so weights only ever come from the gym you're at.
-function basePrefill(slot, i, v, loc){
-  const h = HIST[v] || [];
-  const ok = e => e.wk < S.week && e.w != null && !e.dl && e.loc === loc;
+// Machine weights only ever come from the same gym; free-weight history is shared.
+const sameGym = (e, o) => !o.loc || e.loc === o.loc;
+function basePrefill(slot, i, o){
+  const h = HIST[o.v] || [];
+  const ok = e => e.wk < S.week && e.w != null && !e.dl && sameGym(e, o);
   const exact = h.find(e => ok(e) && e.i === i);
   if (exact) return exact.w;
   if (i > 0) { // a back-off with no history of its own: nearest earlier back-off from the latest week
     const prev = h.filter(e => ok(e) && e.i > 0 && e.i < i);
     if (prev.length) { const wk = prev[0].wk; return prev.filter(e => e.wk === wk).sort((a, b) => b.i - a.i)[0].w; }
   }
-  if (v === slot.name && slot.w[i] != null && loc === "work") return slot.w[i]; // plan weights are work-gym numbers
+  if (o.v === slot.name && slot.w[i] != null && o.loc !== "home") return slot.w[i]; // plan weights are work-gym numbers
   if (i > 0) { const top = h.find(e => ok(e) && e.i === 0); if (top) return roundW(top.w * 0.9); }
   return null;
 }
-function prefill(slot, i, v, loc){
+function prefill(slot, i, o){
   if (slot.bw) return null;
-  if (isDeload(S.week)) { const top = basePrefill(slot, 0, v, loc); return top == null ? null : roundW(top * 0.65); }
-  return basePrefill(slot, i, v, loc);
+  if (isDeload(S.week)) { const top = basePrefill(slot, 0, o); return top == null ? null : roundW(top * 0.65); }
+  return basePrefill(slot, i, o);
 }
-const lastTop = (slot, v, loc) => (HIST[v] || []).find(e => e.wk < S.week && e.i === 0 && !e.dl && e.r != null && e.loc === loc) || null;
+const lastTop = (v, loc) => (HIST[v] || []).find(e => e.wk < S.week && e.i === 0 && !e.dl && e.r != null && (!loc || e.loc === loc)) || null;
 const totalLogged = () => Object.values(D.weeks).reduce((a, w) => a + Object.keys((w && w.sets) || {}).length, 0);
 
 /* ================= rendering ================= */
@@ -175,33 +181,30 @@ function segHTML(key, opts){
 }
 
 function exHTML(slot, sets){
-  const loc = gymOf(slot);
-  const vs = variantsFor(slot), cur = chosenVariant(slot, sets, loc);
-  const curV = vs.find(v => v.n === cur) || vs[0];
+  const o = chosen(slot), opts = optionsFor(slot);
   const ext = EXT[slot.ext], dl = isDeload(S.week);
-  const avail = slotAvailable(slot, loc);
   const restTxt = slot.rest > 0 ? "rest " + fmtRest(slot.rest) : "straight into the next exercise";
   const topTxt = dl ? "Deload: one set at ~65%, stop 3 short" : (ext.flat ? ext.top : ext.top + "; back-offs ~10% lighter, to failure");
   let rows = "";
   for (let i = 0; i < target(slot); i++) rows += setRowHTML(slot, i, ext, dl);
-  const notes = [slot.note, curV.note].filter(Boolean);
-  return '<article class="ex' + (avail ? "" : " na") + '" data-slot="' + slot.id + '">' +
-    '<div class="ex-head"><span class="seq">' + slot.seq + '</span><div class="ex-title"><h3>' + esc(cur) + '</h3>' +
-      (cur !== slot.name ? '<div class="for">in place of ' + esc(slot.name) + '</div>' : '') +
+  const notes = [slot.note, o.note].filter(Boolean);
+  const sub = (o.loc ? '<span class="gymtag ' + o.loc + '">' + LOCN[o.loc] + ' machine</span>' : '') +
+    (o.v !== slot.name ? 'in place of ' + esc(slot.name) : '');
+  return '<article class="ex" data-slot="' + slot.id + '">' +
+    '<div class="ex-head"><span class="seq">' + slot.seq + '</span><div class="ex-title"><h3>' + esc(o.v) + '</h3>' +
+      (sub ? '<div class="for">' + sub + '</div>' : '') +
     '</div><span class="tier t' + slot.tier + '">' + TIER[slot.tier] + '</span></div>' +
     '<div class="meta">' + slot.lo + '–' + slot.hi + ' reps · ' + restTxt + ' · ' + topTxt + '</div>' +
     '<div class="acts">' +
-      '<div class="seg gym" role="group" aria-label="Gym for ' + esc(cur) + '">' + ["work", "home"].map(l =>
-        '<button type="button" data-gym="' + slot.id + '|' + l + '" aria-pressed="' + (l === loc) + '">' + LOCN[l] + '</button>').join("") + '</div>' +
-      '<span class="pill-sel"><select data-variant="' + slot.id + '" id="v-' + slot.id + '" aria-label="Swap ' + esc(cur) + ' for another exercise">' +
+      '<span class="pill-sel"><select data-variant="' + slot.id + '" id="v-' + slot.id + '" aria-label="Swap ' + esc(o.v) + ' for another exercise or gym">' +
         '<option value="" selected disabled>Swap</option>' +
-        vs.map(v => '<option value="' + esc(v.n) + '">' + (v.n === cur ? "✓ " : "") + esc(v.n) + (v.primary ? " (plan)" : "") + (vOK(v, loc) ? "" : " · not at " + LOCL[loc]) + '</option>').join("") +
+        opts.map(x => '<option value="' + esc(optKey(x)) + '">' + (optKey(x) === optKey(o) ? "✓ " : "") + esc(x.v) +
+          (x.loc ? " · " + LOCN[x.loc] : "") + (x.primary ? " (plan)" : "") + '</option>').join("") +
         '<option value="__add__">+ Add your own…</option>' +
         '</select></span>' +
       (notes.length ? '<button type="button" class="mini" data-notes="' + slot.id + '" aria-expanded="false" aria-controls="n-' + slot.id + '">Notes</button>' : '') +
     '</div>' +
     (notes.length ? '<div class="notes" id="n-' + slot.id + '" hidden>' + notes.map(n => '<p>' + esc(n) + '</p>').join("") + '</div>' : '') +
-    (!avail ? '<p class="na-note">Not available at ' + LOCL[loc] + ': none of the options fit its kit. Add your own from Swap, or switch gym.</p>' : '') +
     '<div class="last"></div>' +
     '<div class="sets">' + rows + '</div></article>';
 }
@@ -273,12 +276,10 @@ function buildUnits(){
 
 function nextUpHTML(sets){
   const units = buildUnits().filter(u => UI.show === "all" || u.slots.some(s => remaining(s, sets) > 0));
-  const avail = units.filter(u => u.slots.every(s => slotAvailable(s)));
-  const gym = units.filter(u => !u.slots.every(s => slotAvailable(s)));
   const budget = Number(UI.budget) * 60;
   let html = "", cum = 0, cutDone = false, lastTier = 0;
   const label = s => SESS_OF[s.id].name + " · " + SESS_OF[s.id].day;
-  avail.forEach(u => {
+  units.forEach(u => {
     if (u.tier !== lastTier) { html += '<h2 class="tier-h">' + TIER_H[u.tier] + '</h2>'; lastTier = u.tier; }
     const secs = u.slots.reduce((a, s) => a + slotSecs(s, sets), 0);
     let over = false;
@@ -289,24 +290,16 @@ function nextUpHTML(sets){
     }
     html += '<div class="unit' + (over ? " over" : "") + '">' + groupCards(u.slots, sets, label) + '</div>';
   });
-  if (!avail.length) html += '<p class="empty">Nothing left that the selected gyms can do.</p>';
-  if (gym.length) {
-    html += '<h2 class="tier-h">Not available at the selected gym</h2>';
-    gym.forEach(u => { html += '<div class="unit">' + groupCards(u.slots, sets, label) + '</div>'; });
-  }
+  if (!units.length) html += '<p class="empty">Every set this week is logged.</p>';
   return html;
 }
 
 function settingsHTML(){
-  const have = homeKit();
   const bk = daysSince(D.lastBackup);
   const n = totalLogged();
   return myExHTML() +
-    '<section class="sec"><h2>Gyms</h2><p>Weights and progress are tracked separately for Work and Home, because the machines are calibrated differently.</p>' +
-      '<p>Each exercise has its own Work/Home switch. Exercises you haven\'t set or logged today follow the gym you used last, so switching one exercise moves the rest of the untouched ones with it.</p>' +
-      '<p>Your home gym has:</p>' +
-      '<div class="kit">' + KIT.map(k => '<label for="kit-' + k[0] + '"><input type="checkbox" id="kit-' + k[0] + '" data-kit="' + k[0] + '"' + (have.includes(k[0]) ? " checked" : "") + '>' + k[1] + '</label>').join("") + '</div>' +
-      '<p style="margin-top:12px">At work the full gym is assumed. With Home selected, exercises your home kit can\'t do switch to the first option it can.</p></section>' +
+    '<section class="sec"><h2>Gyms</h2><p>Machine and cable exercises appear twice in each <b>Swap</b> list, once for Work and once for Home, because their weight stacks are calibrated differently. Each version keeps its own weights and progress.</p>' +
+      '<p>Free-weight exercises appear once and share their history between gyms. Whatever you pick in Swap stays picked until you change it.</p></section>' +
     '<section class="sec"><h2>Block</h2><p>Week 1 starts on this Monday. Deloads fall in weeks 6 and 12.</p>' +
       '<label class="datef" for="blockStart">Week 1 begins <input type="date" id="blockStart" value="' + esc(D.settings.blockStart || DEFAULT_START) + '"></label></section>' +
     '<section class="sec"><h2>Backup</h2><p>Your log is stored on this phone only. Export a backup now and then and keep it in iCloud Drive or Files.</p>' +
@@ -321,17 +314,14 @@ function settingsHTML(){
 function myExHTML(){
   const blocks = [];
   PLAN.forEach(sess => sess.slots.forEach(slot => {
-    const cus = D.settings.custom[slot.id] || [];
-    const defs = ["work", "home"].map(l => [l, defaultFor(slot, l)]).filter(x => x[1]);
-    if (!cus.length && !defs.length) return;
+    const cus = variantsFor(slot).filter(v => v.custom);
+    if (!cus.length) return;
     blocks.push('<div class="myx"><div class="myx-h"><b>' + esc(slot.name) + '</b><small>' + esc(sess.name) + ' · ' + slot.seq + '</small></div>' +
-      defs.map(([l, n]) => '<div class="myx-r"><span>Default at ' + LOCL[l] + ': <b>' + esc(n) + '</b></span>' +
-        '<button type="button" class="linkb" data-undef="' + l + '|' + slot.id + '">Back to plan</button></div>').join("") +
-      cus.map((c, ix) => '<div class="myx-r"><span>' + esc(c.n) + ' <small>· your own · ' + c.at.map(l => LOCN[l]).join(", ") + '</small></span>' +
+      cus.map((c, ix) => '<div class="myx-r"><span>' + esc(c.n) + ' <small>· ' + (c.machine ? "machine: Work and Home kept separate" : "free weight") + '</small></span>' +
         '<button type="button" class="linkb" data-rmx="' + slot.id + '|' + ix + '">Remove</button></div>').join("") +
       '</div>');
   }));
-  return '<section class="sec"><h2>My exercises</h2><p>Add your own alternative to any exercise and make it the default at either gym. You can also do this from <b>Swap</b> on any exercise.</p>' +
+  return '<section class="sec"><h2>My exercises</h2><p>Add your own alternative to any exercise. It appears in that exercise\'s <b>Swap</b> list, as Work and Home versions if it\'s a machine.</p>' +
     blocks.join("") +
     '<div class="btns" style="margin-top:12px"><button type="button" class="btn primary" data-addx="">Add an exercise</button></div></section>';
 }
@@ -341,7 +331,6 @@ function bannersHTML(){
   const n = weekNo(S.week);
   if (isDeload(S.week)) html += '<div class="banner"><span><b>Deload week.</b> One top set per exercise at ~65% of your normal load, stopping 3 reps short. Weights below are already scaled.</span></div>';
   else if (n < 1) html += '<div class="banner info"><span>This week is before the block starts (' + dateShort(D.settings.blockStart || DEFAULT_START) + ').</span><button type="button" class="linkb" data-tab="settings">Change</button></div>';
-  if (UI.lastGym === "home" && !D.settings.homeKit) html += '<div class="banner info"><span>Home kit isn\'t set yet, so this assumes dumbbells and a bench.</span><button type="button" class="linkb" data-tab="settings">Set kit</button></div>';
   const bk = daysSince(D.lastBackup), logged = totalLogged();
   if (logged >= 30 && (bk == null || bk >= 14)) html += '<div class="banner"><span>' + (bk == null ? "You haven't backed up your log yet." : "Last backup was " + bk + " days ago.") + '</span><button type="button" class="linkb" data-tab="settings">Back up</button></div>';
   if (!isStandalone() && isIOS() && !UI.installHidden) html += '<div class="banner info"><span>Install it: tap Share, then <b>Add to Home Screen</b>.</span><button type="button" class="linkb" id="hideInstall">Hide</button></div>';
@@ -363,6 +352,16 @@ function render(){
   $("#main").innerHTML = html;
   refresh();
 }
+// Redraw one exercise in place (after a swap), so nothing else on the page moves.
+function rerenderSlot(id){
+  buildHist();
+  const old = document.querySelector('.ex[data-slot="' + id + '"]');
+  if (!old) { render(); return; }
+  const tmp = document.createElement("div");
+  tmp.innerHTML = exHTML(SLOT[id], setsOf(S.week));
+  old.replaceWith(tmp.firstElementChild);
+  refresh();
+}
 
 function refresh(){
   buildHist();
@@ -370,15 +369,15 @@ function refresh(){
   const active = document.activeElement;
   document.querySelectorAll(".set[data-key]").forEach(row => {
     const key = row.dataset.key, slot = SLOT[row.dataset.slot], i = Number(row.dataset.i);
-    const loc = gymOf(slot), log = sets[key], cur = chosenVariant(slot, sets, loc);
+    const o = chosen(slot), log = sets[key];
     row.classList.toggle("done", !!log);
     const tick = row.querySelector(".tick");
     tick.setAttribute("aria-pressed", String(!!log));
     tick.setAttribute("aria-label", (log ? "Undo " : "Log ") + row.querySelector(".sl b").textContent + " set");
     row.querySelector(".sl small").textContent = log ? dayShort(log.d) : "";
     const bits = [];
-    if (log && log.v && log.v !== cur) bits.push("as " + log.v);
-    if (log && (log.loc || "work") !== loc) bits.push("at " + LOCL[log.loc || "work"]);
+    if (log && log.v && log.v !== o.v) bits.push("as " + log.v);
+    if (log && o.loc && (log.loc || "work") !== o.loc) bits.push("at " + LOCL[log.loc || "work"]);
     row.querySelector(".alt").textContent = bits.length ? "Logged " + bits.join(" ") : "";
     row.querySelectorAll("input[data-f]").forEach(inp => {
       if (inp === active) return;
@@ -386,15 +385,14 @@ function refresh(){
       let val;
       if (log) val = log[f];
       else if (dk in S.drafts) val = S.drafts[dk];
-      else val = f === "w" ? prefill(slot, i, cur, loc) : null;
+      else val = f === "w" ? prefill(slot, i, o) : null;
       inp.value = val == null ? "" : (typeof val === "number" ? fmtW(val) : val);
     });
   });
   document.querySelectorAll(".ex[data-slot]").forEach(ex => {
-    const slot = SLOT[ex.dataset.slot], loc = gymOf(slot);
+    const slot = SLOT[ex.dataset.slot];
     ex.classList.toggle("complete", remaining(slot, sets) === 0);
-    ex.querySelectorAll("[data-gym]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.gym.endsWith("|" + loc))));
-    ex.querySelector(".last").innerHTML = lastHTML(slot, chosenVariant(slot, sets, loc), loc);
+    ex.querySelector(".last").innerHTML = lastHTML(slot, chosen(slot));
   });
   PLAN.forEach(sess => {
     const b = document.querySelector('[data-scount="' + sess.id + '"]'); if (!b) return;
@@ -408,23 +406,23 @@ function refresh(){
   renderHeader(sets);
 }
 
-function lastHTML(slot, v, loc){
-  const here = loc, there = otherLoc(here);
-  const e = lastTop(slot, v, here), o = lastTop(slot, v, there);
-  if (!e && !o) return "";
+function lastHTML(slot, o){
   const ext = EXT[slot.ext];
   const fmt = x => ((slot.bw || x.w == null) ? "" : fmtW(x.w) + (slot.added ? " kg added × " : " kg × ")) + x.r + " reps" +
     (x.x ? " " + (ext.label || "+") + x.x : "") + " · " + dateShort(x.d || x.wk);
-  let s = "";
-  if (e) {
-    s = esc((ext.flat ? "Last set 1 at " : "Last top set at ") + LOCL[here] + ": " + fmt(e));
-    if (!isDeload(S.week)) {
-      if (e.r >= slot.hi) s += ' <span class="hint up">Top of range: add load</span>';
-      else if (e.r < slot.lo) s += ' <span class="hint down">Under range: hold the load</span>';
-    }
-  }
+  const hint = e => {
+    if (isDeload(S.week)) return "";
+    if (e.r >= slot.hi) return ' <span class="hint up">Top of range: add load</span>';
+    if (e.r < slot.lo) return ' <span class="hint down">Under range: hold the load</span>';
+    return "";
+  };
+  const lead = ext.flat ? "Last set 1" : "Last top set";
+  if (!o.loc) { const e = lastTop(o.v, null); return e ? esc(lead + ": " + fmt(e)) + hint(e) : ""; }
+  const here = o.loc, there = otherLoc(here);
+  const e = lastTop(o.v, here), x = lastTop(o.v, there);
+  let s = e ? esc(lead + " at " + LOCL[here] + ": " + fmt(e)) + hint(e) : "";
   // the other gym's numbers, for reference only (different calibration), when they're newer or all there is
-  if (o && (!e || (o.d || o.wk) > (e.d || e.wk))) s += (s ? "<br>" : "") + '<span class="other">' + esc("At " + LOCL[there] + ": " + fmt(o)) + '</span>';
+  if (x && (!e || (x.d || x.wk) > (e.d || e.wk))) s += (s ? "<br>" : "") + '<span class="other">' + esc("At " + LOCL[there] + ": " + fmt(x)) + '</span>';
   return s;
 }
 
@@ -474,15 +472,14 @@ function onTick(key){
       setTimeout(() => row.classList.remove("need"), 1200);
       return;
     }
-    const loc = gymOf(slot);
+    const o = chosen(slot);
     const entry = { w: slot.bw ? null : num(inp("w") && inp("w").value), r, x: inp("x") ? num(inp("x").value) : null,
-                    v: chosenVariant(slot, sets, loc), d: todayISO(), t: new Date().toISOString(), loc };
+                    v: o.v, d: todayISO(), t: new Date().toISOString(), loc: o.loc };
     ["w", "r", "x"].forEach(f => { const el = inp(f); if (el) delete S.drafts[S.week + "|" + el.id]; });
     if (document.activeElement && row.contains(document.activeElement)) document.activeElement.blur();
     putSet(S.week, key, entry);
     startRest(slot);
     keepAwake();
-    if (UI.lastGym !== loc) { UI.lastGym = loc; saveUI(); render(); return; } // untouched exercises follow you to this gym
   }
   refresh();
 }
@@ -494,6 +491,11 @@ function onEditDone(inputEl){
   putSet(S.week, key, Object.assign({}, log, { [f]: v }));
   refresh();
 }
+function pickOption(slot, key){
+  const o = optionsFor(slot).find(x => optKey(x) === key); if (!o) return;
+  D.settings.choice[slot.id] = { v: o.v, loc: o.loc };
+  save(); rerenderSlot(slot.id);
+}
 
 /* rest timer */
 let restEnd = 0, restTimer = null, restHide = null;
@@ -502,8 +504,8 @@ function startRest(slot){
   let nextTxt = "Next set";
   if (slot.g) {
     const grp = sess.slots.filter(s => s.g === slot.g);
-    const nx = grp[(grp.indexOf(slot) + 1) % grp.length];
-    nextTxt = (slot.rest > 0 ? "Then " : "Now ") + nx.seq + " · " + chosenVariant(nx);
+    const nx = grp[(grp.indexOf(slot) + 1) % grp.length], no = chosen(nx);
+    nextTxt = (slot.rest > 0 ? "Then " : "Now ") + nx.seq + " · " + no.v + (no.loc ? " (" + LOCL[no.loc] + ")" : "");
   }
   clearInterval(restTimer); clearTimeout(restHide);
   const box = $("#rest");
@@ -536,11 +538,11 @@ async function keepAwake(){
 }
 
 let toastT = null;
-function toast(msg, actionLabel, actionAttrs){
+function toast(msg){
   const t = $("#toast");
-  t.innerHTML = '<span>' + esc(msg) + '</span>' + (actionLabel ? ' <button type="button" class="toast-act" ' + actionAttrs + '>' + esc(actionLabel) + '</button>' : '');
+  t.innerHTML = '<span>' + esc(msg) + '</span>';
   t.hidden = false;
-  clearTimeout(toastT); toastT = setTimeout(() => { t.hidden = true; }, actionLabel ? 6000 : 3500);
+  clearTimeout(toastT); toastT = setTimeout(() => { t.hidden = true; }, 3500);
 }
 
 /* your own exercises */
@@ -550,46 +552,45 @@ function openAdd(slotId){
     sess.slots.map(s => '<option value="' + s.id + '">' + s.seq + " · " + esc(s.name) + '</option>').join("") + '</optgroup>').join("");
   sel.value = slotId || PLAN[0].slots[0].id;
   $("#axName").value = "";
-  $("#axWork").checked = true; $("#axHome").checked = true; $("#axDef").checked = true;
+  $("#axUse").checked = true;
   $("#axErr").hidden = true;
-  syncAddLabel();
+  syncAdd();
   $("#addSheet").hidden = false;
   setTimeout(() => $("#axName").focus(), 50);
 }
-function syncAddLabel(){ const s = SLOT[$("#axSlot").value]; $("#axDefL").textContent = "Use it instead of " + (s ? s.name : "the plan exercise") + " at these gyms"; }
+function syncAdd(){
+  const s = SLOT[$("#axSlot").value];
+  $("#axMachine").checked = s ? isMachineKit(s.kit) : true;
+  $("#axUseL").textContent = "Switch " + (s ? s.name : "the exercise") + " to it now";
+}
 function closeAdd(){ $("#addSheet").hidden = true; }
 function saveAdd(){
   const slot = SLOT[$("#axSlot").value];
   const name = $("#axName").value.trim().replace(/\s+/g, " ");
-  const at = ["work", "home"].filter(l => $(l === "work" ? "#axWork" : "#axHome").checked);
+  const machine = $("#axMachine").checked;
   const err = m => { const e = $("#axErr"); e.textContent = m; e.hidden = false; };
   if (!slot) return err("Pick the exercise this replaces.");
   if (!name) return err("Give the exercise a name.");
-  if (!at.length) return err("Tick at least one gym.");
+  if (name.indexOf("|") >= 0) return err("Leave out the | character.");
   const clash = variantsFor(slot).find(v => v.n.toLowerCase() === name.toLowerCase());
   if (clash) return err(slot.name + " already has " + clash.n + ". Pick it from Swap instead.");
-  (D.settings.custom[slot.id] = D.settings.custom[slot.id] || []).push({ n: name, at });
-  if ($("#axDef").checked) {
-    at.forEach(l => { D.settings.defaults[l][slot.id] = name; delete UI.variant[S.week + ":" + l + ":" + slot.id]; });
-    saveUI();
+  (D.settings.custom[slot.id] = D.settings.custom[slot.id] || []).push({ n: name, machine });
+  if ($("#axUse").checked) {
+    const cur = chosen(slot);
+    D.settings.choice[slot.id] = { v: name, loc: machine ? (cur.loc || "work") : null };
   }
-  save(); closeAdd(); render();
-  toast("Added " + name + ($("#axDef").checked ? " as your default at " + at.map(l => LOCL[l]).join(" and ") : ""));
+  save(); closeAdd();
+  if (UI.tab === "settings") render(); else rerenderSlot(slot.id);
+  toast("Added " + name);
 }
 function removeCustom(slotId, ix){
   const list = D.settings.custom[slotId] || [], c = list[ix]; if (!c) return;
   if (!window.confirm("Remove " + c.n + " from " + SLOT[slotId].name + "? Sets you've logged with it stay in your history.")) return;
   list.splice(ix, 1);
   if (!list.length) delete D.settings.custom[slotId];
-  ["work", "home"].forEach(l => { if (D.settings.defaults[l][slotId] === c.n) delete D.settings.defaults[l][slotId]; });
+  const ch = D.settings.choice[slotId];
+  if (ch && ch.v === c.n) delete D.settings.choice[slotId];
   save(); render();
-}
-function setDefault(loc, slotId, name){
-  const slot = SLOT[slotId]; if (!slot) return;
-  if (!name || name === slot.name) delete D.settings.defaults[loc][slotId]; else D.settings.defaults[loc][slotId] = name;
-  delete UI.variant[S.week + ":" + loc + ":" + slotId]; saveUI();
-  save(); render();
-  toast(name && name !== slot.name ? name + " is now your default at " + LOCL[loc] : slot.name + " is back as the default at " + LOCL[loc]);
 }
 
 /* backup */
@@ -651,15 +652,8 @@ document.addEventListener("click", e => {
     const box = document.getElementById("n-" + t.dataset.notes), open = box.hidden;
     box.hidden = !open; t.setAttribute("aria-expanded", String(open)); return;
   }
-  if (t.dataset.gym) {
-    const p = t.dataset.gym.split("|");
-    UI.exLoc[p[0]] = { loc: p[1], day: todayISO() };
-    UI.lastGym = p[1]; saveUI(); render(); return;
-  }
   if (t.hasAttribute("data-addx")) { openAdd(t.dataset.addx); return; }
   if (t.dataset.rmx) { const p = t.dataset.rmx.split("|"); removeCustom(p[0], Number(p[1])); return; }
-  if (t.dataset.undef) { const p = t.dataset.undef.split("|"); setDefault(p[0], p[1], null); return; }
-  if (t.dataset.mkdef) { const p = t.dataset.mkdef.split("|"); $("#toast").hidden = true; setDefault(p[0], p[1], decodeURIComponent(p[2])); return; }
   switch (t.id) {
     case "prevWk": S.week = addDays(S.week, -7); render(); break;
     case "nextWk": S.week = addDays(S.week, 7); render(); break;
@@ -679,7 +673,7 @@ document.addEventListener("click", e => {
 });
 $("#restoreFile").addEventListener("change", e => { const f = e.target.files && e.target.files[0]; if (f) restoreFrom(f); e.target.value = ""; });
 $("#addForm").addEventListener("submit", e => { e.preventDefault(); saveAdd(); });
-$("#axSlot").addEventListener("change", syncAddLabel);
+$("#axSlot").addEventListener("change", syncAdd);
 $("#addSheet").addEventListener("click", e => { if (e.target.id === "addSheet") closeAdd(); });
 document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#addSheet").hidden) closeAdd(); });
 const main = $("#main");
@@ -688,18 +682,10 @@ main.addEventListener("change", e => {
   const sel = e.target.closest("select[data-variant]");
   if (sel) {
     const slot = SLOT[sel.dataset.variant], pick = sel.value;
-    if (pick === "__add__") { sel.value = ""; openAdd(slot.id); return; }
-    if (pick) {
-      const loc = gymOf(slot);
-      UI.variant[variantKey(slot, loc)] = pick; saveUI();
-      const usual = defaultFor(slot, loc) || slot.name;
-      if (pick !== usual) toast("Swapped at " + LOCL[loc] + " for this week.", "Always use at " + LOCL[loc], 'data-mkdef="' + loc + "|" + slot.id + "|" + encodeURIComponent(pick) + '"');
-    }
-    render(); return;
-  }
-  if (e.target.dataset.kit) {
-    D.settings.homeKit = Array.from(document.querySelectorAll("[data-kit]:checked")).map(c => c.dataset.kit);
-    save(); return;
+    sel.value = "";
+    if (pick === "__add__") { openAdd(slot.id); return; }
+    if (pick) pickOption(slot, pick);
+    return;
   }
   if (e.target.id === "blockStart" && e.target.value) {
     D.settings.blockStart = iso(mondayOf(parseISO(e.target.value)));
@@ -734,6 +720,7 @@ function showUpdate(){
   t.innerHTML = '<span>A new version is ready.</span> <button type="button" class="toast-act" id="reloadBtn">Reload</button>';
   t.hidden = false; clearTimeout(toastT);
 }
+const hadController = !!(navigator.serviceWorker && navigator.serviceWorker.controller);
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
   window.addEventListener("load", () => {
     navigator.serviceWorker.register("./sw.js").then(reg => {
@@ -745,7 +732,6 @@ if ("serviceWorker" in navigator && location.protocol !== "file:") {
     }).catch(() => {});
   });
 }
-const hadController = !!(navigator.serviceWorker && navigator.serviceWorker.controller);
 
 if (["week", "next", "settings"].indexOf(UI.tab) < 0) UI.tab = "week";
 render();

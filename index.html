@@ -124,8 +124,9 @@ main.wrap{padding-block:14px calc(var(--tabs-h) + env(safe-area-inset-bottom,0px
 .pill-sel::after{content:"";position:absolute;right:13px;top:50%;width:6px;height:6px;margin-top:-5px;border-right:1.6px solid var(--accent);border-bottom:1.6px solid var(--accent);transform:rotate(45deg);pointer-events:none}
 .mini{border:1px solid var(--line);border-radius:999px;background:var(--bg);font:600 15px/1 var(--f-body);padding:8px 13px;color:var(--muted)}
 .mini[aria-expanded="true"]{color:var(--ink);border-color:var(--ink)}
-.acts .seg.gym button{padding:9px 11px;font-size:14px}
-.acts .seg.gym button[aria-pressed="true"]{color:var(--accent)}
+.gymtag{display:inline-block;font:600 10.5px/1 var(--f-body);text-transform:uppercase;letter-spacing:.08em;padding:4px 6px;border-radius:5px;margin-right:6px;vertical-align:1px}
+.gymtag.work{background:var(--accent-soft);color:var(--accent)}
+.gymtag.home{background:var(--done-soft);color:var(--done)}
 .notes p{margin:0 0 4px;font-size:14px;max-width:62ch}
 .na-note{margin:0;font-size:13px;color:var(--deload);font-weight:600}
 .ex.na .sets,.ex.na .ex-head{opacity:.55}
@@ -269,11 +270,8 @@ ol.steps{margin:0;padding-left:20px;font-size:14px;line-height:1.6}
     <select id="axSlot" class="inp"></select>
     <label class="fl" for="axName">Exercise name</label>
     <input id="axName" class="inp" type="text" maxlength="60" autocomplete="off" autocapitalize="sentences" spellcheck="false" placeholder="e.g. Belt squat" enterkeyhint="done">
-    <fieldset class="fs"><legend class="fl">Available at</legend>
-      <label class="chk" for="axWork"><input type="checkbox" id="axWork" checked>Work gym</label>
-      <label class="chk" for="axHome"><input type="checkbox" id="axHome" checked>Home gym</label>
-    </fieldset>
-    <label class="chk" for="axDef"><input type="checkbox" id="axDef" checked><span id="axDefL">Use it instead of the plan exercise at these gyms</span></label>
+    <label class="chk" for="axMachine"><input type="checkbox" id="axMachine" checked><span>Machine or cable: keep Work and Home weights separate</span></label>
+    <label class="chk" for="axUse"><input type="checkbox" id="axUse" checked><span id="axUseL">Switch to it now</span></label>
     <p class="err" id="axErr" hidden></p>
     <div class="btns end"><button type="button" class="btn" id="axCancel">Cancel</button><button type="submit" class="btn primary">Add exercise</button></div>
   </form>
