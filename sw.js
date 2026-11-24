@@ -1,6 +1,6 @@
 /* Offline support: everything the app needs is cached on install and served from the cache,
    so it opens instantly with no signal. Bump VERSION on every release so phones pick up the update. */
-const VERSION = "gymlog-1.1.0";
+const VERSION = "gymlog-1.2.0";
 const ASSETS = [
   "./", "./index.html", "./app.js", "./plan.js", "./manifest.webmanifest",
   "./icons/icon-192.png", "./icons/icon-512.png", "./icons/icon-maskable-512.png", "./icons/apple-touch-icon.png",

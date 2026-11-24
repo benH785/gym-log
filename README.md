@@ -12,7 +12,9 @@ Your log is stored **on the phone only** (browser storage for this site). Nothin
 
 ### Two gyms
 
-Pick **Work** or **Home** at the top before logging. Machines are calibrated differently, so pre-filled weights, the "last top set" line and the add-load hints only use sets from the gym you're in. The other gym's latest top set is shown underneath, for reference only. The programme's plan weights are work-gym numbers, so at home an exercise starts blank until you've logged it there once.
+Every exercise has its own **Work / Home** switch, so a lunchtime session at work and an evening one at home can sit in the same day. An exercise you haven't switched or logged today follows the gym you last used: flip one exercise to Home and the untouched ones go with it, while anything you've already set or logged today keeps its gym. Choices made on individual exercises last for the day.
+
+Machines are calibrated differently, so pre-filled weights, the "last top set" line and the add-load hints only use sets from the exercise's current gym. The other gym's latest top set is shown underneath, for reference only. The programme's plan weights are work-gym numbers, so at home an exercise starts blank until you've logged it there once.
 
 ### Your own exercises
 
@@ -53,4 +55,4 @@ Logged sets are keyed by exercise id (`bench_0` = bench, top set), so keep exist
 }
 ```
 
-`w` kg (added kg for pull-ups), `r` reps, `x` partials or rest-pause reps on the top set, `v` exercise actually done (plan, swap or your own), `d` date logged, `loc` work or home. Weeks are keyed by their Monday. Exercise history is matched on `v` and `loc`, so the same exercise shares history wherever it's used, but each gym keeps its own weights. `custom` holds exercises you added per slot; `defaults` holds the exercise used by default at each gym.
+`w` kg (added kg for pull-ups), `r` reps, `x` partials or rest-pause reps on the top set, `v` exercise actually done (plan, swap or your own), `d` date logged, `t` time logged (from 1.2), `loc` work or home. Weeks are keyed by their Monday. Exercise history is matched on `v` and `loc`, so the same exercise shares history wherever it's used, but each gym keeps its own weights. `custom` holds exercises you added per slot; `defaults` holds the exercise used by default at each gym.

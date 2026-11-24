@@ -124,6 +124,8 @@ main.wrap{padding-block:14px calc(var(--tabs-h) + env(safe-area-inset-bottom,0px
 .pill-sel::after{content:"";position:absolute;right:13px;top:50%;width:6px;height:6px;margin-top:-5px;border-right:1.6px solid var(--accent);border-bottom:1.6px solid var(--accent);transform:rotate(45deg);pointer-events:none}
 .mini{border:1px solid var(--line);border-radius:999px;background:var(--bg);font:600 15px/1 var(--f-body);padding:8px 13px;color:var(--muted)}
 .mini[aria-expanded="true"]{color:var(--ink);border-color:var(--ink)}
+.acts .seg.gym button{padding:9px 11px;font-size:14px}
+.acts .seg.gym button[aria-pressed="true"]{color:var(--accent)}
 .notes p{margin:0 0 4px;font-size:14px;max-width:62ch}
 .na-note{margin:0;font-size:13px;color:var(--deload);font-weight:600}
 .ex.na .sets,.ex.na .ex-head{opacity:.55}
@@ -238,7 +240,6 @@ ol.steps{margin:0;padding-left:20px;font-size:14px;line-height:1.6}
     <div class="bar" id="bar"></div>
     <div class="r2">
       <div class="r2-l"><b id="setsDone">0 / 88</b> <span class="ctl-l">sets</span><small id="timeLeft"></small></div>
-      <div id="locSeg"></div>
     </div>
   </div>
 </header>
