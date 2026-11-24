@@ -130,6 +130,7 @@ main.wrap{padding-block:14px calc(var(--tabs-h) + env(safe-area-inset-bottom,0px
 .last{font-size:13px;color:var(--muted)}
 .last:empty{display:none}
 .last .hint{font-weight:600;margin-left:4px;white-space:nowrap}
+.last .other{opacity:.8;font-style:italic}
 .hint.up{color:var(--done)}
 .hint.down{color:var(--deload)}
 
@@ -179,6 +180,28 @@ main.wrap{padding-block:14px calc(var(--tabs-h) + env(safe-area-inset-bottom,0px
 .kv dt{color:var(--muted)}
 .kv dd{margin:0;font-variant-numeric:tabular-nums}
 ol.steps{margin:0;padding-left:20px;font-size:14px;line-height:1.6}
+.myx{border-top:1px solid var(--line);padding:10px 0;display:grid;gap:6px}
+.myx-h{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.myx-h b{font:600 18px/1.1 var(--f-display)}
+.myx-h small{font-size:12px;color:var(--muted)}
+.myx-r{display:flex;gap:10px;align-items:center;justify-content:space-between;font-size:14px}
+.myx-r span{min-width:0}
+.myx-r small{color:var(--muted)}
+.myx-r .linkb{font-size:14px;flex:none;padding:6px 0}
+
+/* ---------- add-exercise sheet ---------- */
+.sheet{position:fixed;inset:0;z-index:30;background:rgb(0 0 0 / .45);display:flex;align-items:flex-end;justify-content:center}
+.sheet-card{margin:0;background:var(--surface);width:100%;max-width:640px;max-height:90vh;overflow:auto;border-radius:16px 16px 0 0;display:grid;gap:8px;padding-block:18px calc(18px + env(safe-area-inset-bottom,0px));padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.sheet-card h2{font:700 22px/1 var(--f-display);text-transform:uppercase;letter-spacing:.03em;margin:2px 0 6px}
+.fl{font:600 12px/1.2 var(--f-body);color:var(--muted);text-transform:uppercase;letter-spacing:.07em;margin-top:6px;padding:0}
+.inp{width:100%;font:500 16px var(--f-body);padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--ink)}
+.inp:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft)}
+.fs{border:0;margin:0;padding:0;display:flex;gap:8px;flex-wrap:wrap}
+.fs legend{margin-bottom:6px}
+.chk{display:flex;gap:10px;align-items:center;padding:12px;border:1px solid var(--line);border-radius:10px;font-size:15px}
+.chk input{width:20px;height:20px;flex:none;accent-color:var(--accent)}
+.err{margin:0;color:var(--warn);font-size:14px;font-weight:600}
+.btns.end{justify-content:flex-end;margin-top:8px}
 
 /* ---------- bottom tabs ---------- */
 .tabs{position:fixed;left:0;right:0;bottom:0;z-index:15;background:var(--surface);border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom,0px)}
@@ -195,7 +218,8 @@ ol.steps{margin:0;padding-left:20px;font-size:14px;line-height:1.6}
 .rest-l b{display:block;font:600 11px/1.2 var(--f-body);text-transform:uppercase;letter-spacing:.08em;opacity:.75}
 .rest-l span{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .rest button{flex:none;border:0;border-radius:10px;padding:11px 12px;font:600 14px/1 var(--f-body);background:rgb(127 127 127 / .24);color:inherit}
-.toast{position:fixed;z-index:25;left:50%;transform:translateX(-50%);bottom:calc(var(--tabs-h) + env(safe-area-inset-bottom,0px) + 84px);background:var(--pill);color:var(--pill-ink);padding:10px 14px;border-radius:10px;font-size:14px;max-width:calc(100% - 32px);box-shadow:0 6px 20px rgb(0 0 0 / .25)}
+.toast{position:fixed;z-index:25;left:50%;transform:translateX(-50%);bottom:calc(var(--tabs-h) + env(safe-area-inset-bottom,0px) + 84px);background:var(--pill);color:var(--pill-ink);padding:10px 10px 10px 14px;border-radius:10px;font-size:14px;width:max-content;max-width:calc(100% - 32px);box-shadow:0 6px 20px rgb(0 0 0 / .25);display:flex;gap:12px;align-items:center}
+.toast-act{flex:none;border:0;border-radius:8px;padding:9px 12px;font:600 14px/1 var(--f-body);background:rgb(127 127 127 / .28);color:inherit}
 
 @media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important}}
 </style>
@@ -236,6 +260,23 @@ ol.steps{margin:0;padding-left:20px;font-size:14px;line-height:1.6}
     <button type="button" data-tab="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg>Settings</button>
   </div>
 </nav>
+
+<div class="sheet" id="addSheet" hidden>
+  <form class="sheet-card" id="addForm" role="dialog" aria-modal="true" aria-labelledby="addT" novalidate>
+    <h2 id="addT">Add an exercise</h2>
+    <label class="fl" for="axSlot">Alternative to</label>
+    <select id="axSlot" class="inp"></select>
+    <label class="fl" for="axName">Exercise name</label>
+    <input id="axName" class="inp" type="text" maxlength="60" autocomplete="off" autocapitalize="sentences" spellcheck="false" placeholder="e.g. Belt squat" enterkeyhint="done">
+    <fieldset class="fs"><legend class="fl">Available at</legend>
+      <label class="chk" for="axWork"><input type="checkbox" id="axWork" checked>Work gym</label>
+      <label class="chk" for="axHome"><input type="checkbox" id="axHome" checked>Home gym</label>
+    </fieldset>
+    <label class="chk" for="axDef"><input type="checkbox" id="axDef" checked><span id="axDefL">Use it instead of the plan exercise at these gyms</span></label>
+    <p class="err" id="axErr" hidden></p>
+    <div class="btns end"><button type="button" class="btn" id="axCancel">Cancel</button><button type="submit" class="btn primary">Add exercise</button></div>
+  </form>
+</div>
 
 <input type="file" id="restoreFile" accept="application/json,.json" hidden>
 <script src="plan.js"></script>

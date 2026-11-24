@@ -10,6 +10,14 @@ A phone-first, installable web app for the **Stretch/Contraction v4.4** programm
 
 Your log is stored **on the phone only** (browser storage for this site). Nothing is sent anywhere and nothing is stored in this repo. Use **Settings > Export backup** regularly and keep the file in iCloud Drive; **Restore from file** brings it back on a new phone.
 
+### Two gyms
+
+Pick **Work** or **Home** at the top before logging. Machines are calibrated differently, so pre-filled weights, the "last top set" line and the add-load hints only use sets from the gym you're in. The other gym's latest top set is shown underneath, for reference only. The programme's plan weights are work-gym numbers, so at home an exercise starts blank until you've logged it there once.
+
+### Your own exercises
+
+**Swap > + Add your own…** on any exercise (or **Settings > My exercises > Add an exercise**): name it, tick the gyms that have it, and optionally make it the default there. After a one-off swap, **Always use** makes that choice the default at the current gym. Settings lists every default and custom exercise, with **Back to plan** and **Remove**.
+
 ## What's in it
 
 | File | Purpose |
@@ -35,9 +43,14 @@ Logged sets are keyed by exercise id (`bench_0` = bench, top set), so keep exist
 {
   "v": 1,
   "weeks": { "2026-11-09": { "sets": { "bench_0": { "w": 120, "r": 7, "x": null, "v": "Barbell bench press", "d": "2026-11-10", "loc": "work" } } } },
-  "settings": { "blockStart": "2026-11-09", "homeKit": ["dumbbells", "bench"] },
+  "settings": {
+    "blockStart": "2026-11-09",
+    "homeKit": ["dumbbells", "bench", "machines"],
+    "custom": { "hack": [{ "n": "Belt squat", "at": ["work", "home"] }] },
+    "defaults": { "work": { "hack": "Belt squat" }, "home": { "hack": "Belt squat" } }
+  },
   "lastBackup": "2026-11-10T12:00:00.000Z"
 }
 ```
 
-`w` kg (added kg for pull-ups), `r` reps, `x` partials or rest-pause reps on the top set, `v` exercise actually done (plan or swap), `d` date logged, `loc` work or home. Weeks are keyed by their Monday.
+`w` kg (added kg for pull-ups), `r` reps, `x` partials or rest-pause reps on the top set, `v` exercise actually done (plan, swap or your own), `d` date logged, `loc` work or home. Weeks are keyed by their Monday. Exercise history is matched on `v` and `loc`, so the same exercise shares history wherever it's used, but each gym keeps its own weights. `custom` holds exercises you added per slot; `defaults` holds the exercise used by default at each gym.

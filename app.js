@@ -1,7 +1,7 @@
 /* Stretch/Contraction Log — app logic. All data lives on this phone (localStorage), with JSON backup/restore. */
 (function () {
 "use strict";
-const APP_VERSION = "1.0.0";
+const APP_VERSION = "1.1.0";
 const P = window.SC_PLAN;
 const { PLAN, KIT, DEFAULT_HOME, EXT, TIER, TIER_H } = P;
 const DEFAULT_START = P.DEFAULT_START;
@@ -39,16 +39,23 @@ const daysSince = isoTs => isoTs ? Math.floor((Date.now() - new Date(isoTs).getT
 const isStandalone = () => (window.matchMedia && matchMedia("(display-mode: standalone)").matches) || navigator.standalone === true;
 const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 const ICON_TICK = '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4.5 10.5 3.5 3.5 7.5-8"/></svg>';
+const LOCN = { work: "Work", home: "Home" }, LOCL = { work: "work", home: "home" };
+const otherLoc = l => l === "work" ? "home" : "work";
 const ICON_CHEV = '<svg class="chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3.5 6 4.5 4.5L12.5 6"/></svg>';
 
 /* ================= storage (this phone) ================= */
 const KEY = "sc44:data", UIKEY = "sc44:ui";
 function normalise(d){
   if (!d || typeof d !== "object") d = {};
+  const settings = Object.assign({ blockStart: DEFAULT_START, homeKit: null }, d.settings || {});
+  // your own exercises per slot: { slotId: [{ n, at: ["work","home"] }] }; defaults per gym: { work: { slotId: name }, home: {...} }
+  settings.custom = (settings.custom && typeof settings.custom === "object") ? settings.custom : {};
+  const df = (settings.defaults && typeof settings.defaults === "object") ? settings.defaults : {};
+  settings.defaults = { work: df.work || {}, home: df.home || {} };
   return {
     v: 1,
     weeks: (d.weeks && typeof d.weeks === "object") ? d.weeks : {},
-    settings: Object.assign({ blockStart: DEFAULT_START, homeKit: null }, d.settings || {}),
+    settings,
     lastBackup: d.lastBackup || null
   };
 }
@@ -80,8 +87,12 @@ function kitOK(k){
   const have = homeKit();
   return (k || []).every(tag => tag.split("|").some(t => have.includes(t)));
 }
-const variantsFor = slot => [{ n: slot.name, k: slot.kit, primary: true }].concat(slot.swaps || []);
-const slotAvailable = slot => variantsFor(slot).some(v => kitOK(v.k));
+const variantsFor = slot => [{ n: slot.name, k: slot.kit, primary: true }].concat(slot.swaps || [],
+  (D.settings.custom[slot.id] || []).map(c => ({ n: c.n, at: c.at, custom: true })));
+// your own exercises are available at the gyms you ticked; built-in ones follow the kit list
+const vOK = v => v.at ? v.at.includes(UI.loc) : kitOK(v.k);
+const slotAvailable = slot => variantsFor(slot).some(vOK);
+const defaultFor = (slot, loc) => (D.settings.defaults[loc] || {})[slot.id] || null;
 const target = slot => isDeload(S.week) ? 1 : slot.w.length;
 const setsOf = wk => (D.weeks[wk] && D.weeks[wk].sets) || {};
 function doneCount(slot, sets){
@@ -97,12 +108,14 @@ function chosenVariant(slot, sets){
   const manual = UI.variant[variantKey(slot)];
   const vs = variantsFor(slot);
   if (manual && vs.some(v => v.n === manual)) return manual;
+  const def = defaultFor(slot, UI.loc), dv = def && vs.find(v => v.n === def);
+  if (dv && vOK(dv)) return def;
   sets = sets || setsOf(S.week);
-  let lastLogged = null;
-  for (let i = 0; i < slot.w.length; i++) { const e = sets[slot.id + "_" + i]; if (e && e.v) lastLogged = e.v; }
+  let lastLogged = null; // what you did at this gym earlier this week
+  for (let i = 0; i < slot.w.length; i++) { const e = sets[slot.id + "_" + i]; if (e && e.v && (e.loc || "work") === UI.loc) lastLogged = e.v; }
   const lv = lastLogged && vs.find(v => v.n === lastLogged);
-  if (lv && kitOK(lv.k)) return lastLogged;
-  const ok = vs.find(v => kitOK(v.k));
+  if (lv && vOK(lv)) return lastLogged;
+  const ok = vs.find(vOK);
   return (ok || vs[0]).n;
 }
 
@@ -113,20 +126,21 @@ function buildHist(){
     Object.keys(sets).sort().forEach(k => {
       const e = sets[k]; if (!e || !e.v) return;
       const i = Number(k.split("_").pop());
-      (HIST[e.v] = HIST[e.v] || []).push({ wk, i, w: e.w, r: e.r, x: e.x, d: e.d, dl });
+      (HIST[e.v] = HIST[e.v] || []).push({ wk, i, w: e.w, r: e.r, x: e.x, d: e.d, dl, loc: e.loc || "work" });
     });
   });
 }
+// Machines are calibrated differently at each gym, so weights only ever come from the gym you're at.
 function basePrefill(slot, i, v){
   const h = HIST[v] || [];
-  const ok = e => e.wk < S.week && e.w != null && !e.dl;
+  const ok = e => e.wk < S.week && e.w != null && !e.dl && e.loc === UI.loc;
   const exact = h.find(e => ok(e) && e.i === i);
   if (exact) return exact.w;
   if (i > 0) { // a back-off with no history of its own: nearest earlier back-off from the latest week
     const prev = h.filter(e => ok(e) && e.i > 0 && e.i < i);
     if (prev.length) { const wk = prev[0].wk; return prev.filter(e => e.wk === wk).sort((a, b) => b.i - a.i)[0].w; }
   }
-  if (v === slot.name && slot.w[i] != null) return slot.w[i];
+  if (v === slot.name && slot.w[i] != null && UI.loc === "work") return slot.w[i]; // plan weights are work-gym numbers
   if (i > 0) { const top = h.find(e => ok(e) && e.i === 0); if (top) return roundW(top.w * 0.9); }
   return null;
 }
@@ -135,7 +149,7 @@ function prefill(slot, i, v){
   if (isDeload(S.week)) { const top = basePrefill(slot, 0, v); return top == null ? null : roundW(top * 0.65); }
   return basePrefill(slot, i, v);
 }
-const lastTop = (slot, v) => (HIST[v] || []).find(e => e.wk < S.week && e.i === 0 && !e.dl && e.r != null) || null;
+const lastTop = (slot, v, loc) => (HIST[v] || []).find(e => e.wk < S.week && e.i === 0 && !e.dl && e.r != null && e.loc === loc) || null;
 const totalLogged = () => Object.values(D.weeks).reduce((a, w) => a + Object.keys((w && w.sets) || {}).length, 0);
 
 /* ================= rendering ================= */
@@ -159,15 +173,16 @@ function exHTML(slot, sets){
       (cur !== slot.name ? '<div class="for">in place of ' + esc(slot.name) + '</div>' : '') +
     '</div><span class="tier t' + slot.tier + '">' + TIER[slot.tier] + '</span></div>' +
     '<div class="meta">' + slot.lo + '–' + slot.hi + ' reps · ' + restTxt + ' · ' + topTxt + '</div>' +
-    ((vs.length > 1 || notes.length) ? '<div class="acts">' +
-      (vs.length > 1 ? '<span class="pill-sel"><select data-variant="' + slot.id + '" id="v-' + slot.id + '" aria-label="Swap ' + esc(cur) + ' for another exercise">' +
+    '<div class="acts">' +
+      '<span class="pill-sel"><select data-variant="' + slot.id + '" id="v-' + slot.id + '" aria-label="Swap ' + esc(cur) + ' for another exercise">' +
         '<option value="" selected disabled>Swap</option>' +
-        vs.map(v => '<option value="' + esc(v.n) + '">' + (v.n === cur ? "✓ " : "") + esc(v.n) + (v.primary ? " (plan)" : "") + (kitOK(v.k) ? "" : " · no kit") + '</option>').join("") +
-        '</select></span>' : '') +
+        vs.map(v => '<option value="' + esc(v.n) + '">' + (v.n === cur ? "✓ " : "") + esc(v.n) + (v.primary ? " (plan)" : "") + (vOK(v) ? "" : " · not at this gym") + '</option>').join("") +
+        '<option value="__add__">+ Add your own…</option>' +
+        '</select></span>' +
       (notes.length ? '<button type="button" class="mini" data-notes="' + slot.id + '" aria-expanded="false" aria-controls="n-' + slot.id + '">Notes</button>' : '') +
-      '</div>' : '') +
+    '</div>' +
     (notes.length ? '<div class="notes" id="n-' + slot.id + '" hidden>' + notes.map(n => '<p>' + esc(n) + '</p>').join("") + '</div>' : '') +
-    (!avail ? '<p class="na-note">Needs the gym: none of the swaps fit your home kit.</p>' : '') +
+    (!avail ? '<p class="na-note">Not available at this gym: none of the options fit its kit. Add your own from Swap.</p>' : '') +
     '<div class="last"></div>' +
     '<div class="sets">' + rows + '</div></article>';
 }
@@ -255,9 +270,9 @@ function nextUpHTML(sets){
     }
     html += '<div class="unit' + (over ? " over" : "") + '">' + groupCards(u.slots, sets, label) + '</div>';
   });
-  if (!avail.length) html += '<p class="empty">Nothing left that your kit here can do.</p>';
+  if (!avail.length) html += '<p class="empty">Nothing left that this gym\'s kit can do.</p>';
   if (gym.length) {
-    html += '<h2 class="tier-h">Needs the gym</h2>';
+    html += '<h2 class="tier-h">Not available at this gym</h2>';
     gym.forEach(u => { html += '<div class="unit">' + groupCards(u.slots, sets, label) + '</div>'; });
   }
   return html;
@@ -267,8 +282,11 @@ function settingsHTML(){
   const have = homeKit();
   const bk = daysSince(D.lastBackup);
   const n = totalLogged();
-  return '<section class="sec"><h2>Home kit</h2><p>Tick what you have at home. With Home selected, each exercise switches to the first swap your kit allows. At work the full gym is assumed.</p>' +
-      '<div class="kit">' + KIT.map(k => '<label for="kit-' + k[0] + '"><input type="checkbox" id="kit-' + k[0] + '" data-kit="' + k[0] + '"' + (have.includes(k[0]) ? " checked" : "") + '>' + k[1] + '</label>').join("") + '</div></section>' +
+  return myExHTML() +
+    '<section class="sec"><h2>Gyms</h2><p>Weights and progress are tracked separately for Work and Home, because the machines are calibrated differently. Pick the gym at the top before you log.</p>' +
+      '<p>Your home gym has:</p>' +
+      '<div class="kit">' + KIT.map(k => '<label for="kit-' + k[0] + '"><input type="checkbox" id="kit-' + k[0] + '" data-kit="' + k[0] + '"' + (have.includes(k[0]) ? " checked" : "") + '>' + k[1] + '</label>').join("") + '</div>' +
+      '<p style="margin-top:12px">At work the full gym is assumed. With Home selected, exercises your home kit can\'t do switch to the first option it can.</p></section>' +
     '<section class="sec"><h2>Block</h2><p>Week 1 starts on this Monday. Deloads fall in weeks 6 and 12.</p>' +
       '<label class="datef" for="blockStart">Week 1 begins <input type="date" id="blockStart" value="' + esc(D.settings.blockStart || DEFAULT_START) + '"></label></section>' +
     '<section class="sec"><h2>Backup</h2><p>Your log is stored on this phone only. Export a backup now and then and keep it in iCloud Drive or Files.</p>' +
@@ -278,6 +296,24 @@ function settingsHTML(){
       ? '<p>Running from your home screen. It works offline; updates arrive the next time you open it with a connection.</p>'
       : '<ol class="steps"><li>Open this page in Safari.</li><li>Tap the Share button.</li><li>Choose <b>Add to Home Screen</b>, then <b>Add</b>.</li></ol>') + '</section>' +
     '<section class="sec"><h2>About</h2><dl class="kv"><dt>Programme</dt><dd>Stretch/Contraction v' + esc(P.version) + '</dd><dt>App</dt><dd>' + APP_VERSION + '</dd></dl></section>';
+}
+
+function myExHTML(){
+  const blocks = [];
+  PLAN.forEach(sess => sess.slots.forEach(slot => {
+    const cus = D.settings.custom[slot.id] || [];
+    const defs = ["work", "home"].map(l => [l, defaultFor(slot, l)]).filter(x => x[1]);
+    if (!cus.length && !defs.length) return;
+    blocks.push('<div class="myx"><div class="myx-h"><b>' + esc(slot.name) + '</b><small>' + esc(sess.name) + ' · ' + slot.seq + '</small></div>' +
+      defs.map(([l, n]) => '<div class="myx-r"><span>Default at ' + LOCL[l] + ': <b>' + esc(n) + '</b></span>' +
+        '<button type="button" class="linkb" data-undef="' + l + '|' + slot.id + '">Back to plan</button></div>').join("") +
+      cus.map((c, ix) => '<div class="myx-r"><span>' + esc(c.n) + ' <small>· your own · ' + c.at.map(l => LOCN[l]).join(", ") + '</small></span>' +
+        '<button type="button" class="linkb" data-rmx="' + slot.id + '|' + ix + '">Remove</button></div>').join("") +
+      '</div>');
+  }));
+  return '<section class="sec"><h2>My exercises</h2><p>Add your own alternative to any exercise and make it the default at either gym. You can also do this from <b>Swap</b> on any exercise.</p>' +
+    blocks.join("") +
+    '<div class="btns" style="margin-top:12px"><button type="button" class="btn primary" data-addx="">Add an exercise</button></div></section>';
 }
 
 function bannersHTML(){
@@ -321,7 +357,10 @@ function refresh(){
     tick.setAttribute("aria-pressed", String(!!log));
     tick.setAttribute("aria-label", (log ? "Undo " : "Log ") + row.querySelector(".sl b").textContent + " set");
     row.querySelector(".sl small").textContent = log ? dayShort(log.d) : "";
-    row.querySelector(".alt").textContent = (log && log.v && log.v !== cur) ? "Logged as " + log.v : "";
+    const bits = [];
+    if (log && log.v && log.v !== cur) bits.push("as " + log.v);
+    if (log && (log.loc || "work") !== UI.loc) bits.push("at " + LOCL[log.loc || "work"]);
+    row.querySelector(".alt").textContent = bits.length ? "Logged " + bits.join(" ") : "";
     row.querySelectorAll("input[data-f]").forEach(inp => {
       if (inp === active) return;
       const f = inp.dataset.f, dk = S.week + "|" + inp.id;
@@ -350,15 +389,22 @@ function refresh(){
 }
 
 function lastHTML(slot, v){
-  const e = lastTop(slot, v); if (!e) return "";
+  const here = UI.loc, there = otherLoc(here);
+  const e = lastTop(slot, v, here), o = lastTop(slot, v, there);
+  if (!e && !o) return "";
   const ext = EXT[slot.ext];
-  const load = (slot.bw || e.w == null) ? "" : fmtW(e.w) + (slot.added ? " kg added × " : " kg × ");
-  let s = esc((ext.flat ? "Last set 1: " : "Last top set: ") + load + e.r + " reps" +
-    (e.x ? " " + (ext.label || "+") + e.x : "") + " · " + dateShort(e.d || e.wk));
-  if (!isDeload(S.week)) {
-    if (e.r >= slot.hi) s += ' <span class="hint up">Top of range: add load</span>';
-    else if (e.r < slot.lo) s += ' <span class="hint down">Under range: hold the load</span>';
+  const fmt = x => ((slot.bw || x.w == null) ? "" : fmtW(x.w) + (slot.added ? " kg added × " : " kg × ")) + x.r + " reps" +
+    (x.x ? " " + (ext.label || "+") + x.x : "") + " · " + dateShort(x.d || x.wk);
+  let s = "";
+  if (e) {
+    s = esc((ext.flat ? "Last set 1 at " : "Last top set at ") + LOCL[here] + ": " + fmt(e));
+    if (!isDeload(S.week)) {
+      if (e.r >= slot.hi) s += ' <span class="hint up">Top of range: add load</span>';
+      else if (e.r < slot.lo) s += ' <span class="hint down">Under range: hold the load</span>';
+    }
   }
+  // the other gym's numbers, for reference only (different calibration), when they're newer or all there is
+  if (o && (!e || (o.d || o.wk) > (e.d || e.wk))) s += (s ? "<br>" : "") + '<span class="other">' + esc("At " + LOCL[there] + ": " + fmt(o)) + '</span>';
   return s;
 }
 
@@ -468,9 +514,60 @@ async function keepAwake(){
 }
 
 let toastT = null;
-function toast(msg){
-  const t = $("#toast"); t.textContent = msg; t.hidden = false;
-  clearTimeout(toastT); toastT = setTimeout(() => { t.hidden = true; }, 3500);
+function toast(msg, actionLabel, actionAttrs){
+  const t = $("#toast");
+  t.innerHTML = '<span>' + esc(msg) + '</span>' + (actionLabel ? ' <button type="button" class="toast-act" ' + actionAttrs + '>' + esc(actionLabel) + '</button>' : '');
+  t.hidden = false;
+  clearTimeout(toastT); toastT = setTimeout(() => { t.hidden = true; }, actionLabel ? 6000 : 3500);
+}
+
+/* your own exercises */
+function openAdd(slotId){
+  const sel = $("#axSlot");
+  sel.innerHTML = PLAN.map(sess => '<optgroup label="' + esc(sess.name + " · " + sess.day) + '">' +
+    sess.slots.map(s => '<option value="' + s.id + '">' + s.seq + " · " + esc(s.name) + '</option>').join("") + '</optgroup>').join("");
+  sel.value = slotId || PLAN[0].slots[0].id;
+  $("#axName").value = "";
+  $("#axWork").checked = true; $("#axHome").checked = true; $("#axDef").checked = true;
+  $("#axErr").hidden = true;
+  syncAddLabel();
+  $("#addSheet").hidden = false;
+  setTimeout(() => $("#axName").focus(), 50);
+}
+function syncAddLabel(){ const s = SLOT[$("#axSlot").value]; $("#axDefL").textContent = "Use it instead of " + (s ? s.name : "the plan exercise") + " at these gyms"; }
+function closeAdd(){ $("#addSheet").hidden = true; }
+function saveAdd(){
+  const slot = SLOT[$("#axSlot").value];
+  const name = $("#axName").value.trim().replace(/\s+/g, " ");
+  const at = ["work", "home"].filter(l => $(l === "work" ? "#axWork" : "#axHome").checked);
+  const err = m => { const e = $("#axErr"); e.textContent = m; e.hidden = false; };
+  if (!slot) return err("Pick the exercise this replaces.");
+  if (!name) return err("Give the exercise a name.");
+  if (!at.length) return err("Tick at least one gym.");
+  const clash = variantsFor(slot).find(v => v.n.toLowerCase() === name.toLowerCase());
+  if (clash) return err(slot.name + " already has " + clash.n + ". Pick it from Swap instead.");
+  (D.settings.custom[slot.id] = D.settings.custom[slot.id] || []).push({ n: name, at });
+  if ($("#axDef").checked) {
+    at.forEach(l => { D.settings.defaults[l][slot.id] = name; delete UI.variant[S.week + ":" + l + ":" + slot.id]; });
+    saveUI();
+  }
+  save(); closeAdd(); render();
+  toast("Added " + name + ($("#axDef").checked ? " as your default at " + at.map(l => LOCL[l]).join(" and ") : ""));
+}
+function removeCustom(slotId, ix){
+  const list = D.settings.custom[slotId] || [], c = list[ix]; if (!c) return;
+  if (!window.confirm("Remove " + c.n + " from " + SLOT[slotId].name + "? Sets you've logged with it stay in your history.")) return;
+  list.splice(ix, 1);
+  if (!list.length) delete D.settings.custom[slotId];
+  ["work", "home"].forEach(l => { if (D.settings.defaults[l][slotId] === c.n) delete D.settings.defaults[l][slotId]; });
+  save(); render();
+}
+function setDefault(loc, slotId, name){
+  const slot = SLOT[slotId]; if (!slot) return;
+  if (!name || name === slot.name) delete D.settings.defaults[loc][slotId]; else D.settings.defaults[loc][slotId] = name;
+  delete UI.variant[S.week + ":" + loc + ":" + slotId]; saveUI();
+  save(); render();
+  toast(name && name !== slot.name ? name + " is now your default at " + LOCL[loc] : slot.name + " is back as the default at " + LOCL[loc]);
 }
 
 /* backup */
@@ -532,6 +629,10 @@ document.addEventListener("click", e => {
     const box = document.getElementById("n-" + t.dataset.notes), open = box.hidden;
     box.hidden = !open; t.setAttribute("aria-expanded", String(open)); return;
   }
+  if (t.hasAttribute("data-addx")) { openAdd(t.dataset.addx); return; }
+  if (t.dataset.rmx) { const p = t.dataset.rmx.split("|"); removeCustom(p[0], Number(p[1])); return; }
+  if (t.dataset.undef) { const p = t.dataset.undef.split("|"); setDefault(p[0], p[1], null); return; }
+  if (t.dataset.mkdef) { const p = t.dataset.mkdef.split("|"); $("#toast").hidden = true; setDefault(p[0], p[1], decodeURIComponent(p[2])); return; }
   switch (t.id) {
     case "prevWk": S.week = addDays(S.week, -7); render(); break;
     case "nextWk": S.week = addDays(S.week, 7); render(); break;
@@ -539,6 +640,7 @@ document.addEventListener("click", e => {
     case "hideInstall": UI.installHidden = true; saveUI(); render(); break;
     case "exportBtn": exportData(); break;
     case "restoreBtn": $("#restoreFile").click(); break;
+    case "axCancel": closeAdd(); break;
     case "reloadBtn": location.reload(); break;
     case "restSkip": clearInterval(restTimer); clearTimeout(restHide); $("#rest").hidden = true; break;
     case "restAdd":
@@ -549,11 +651,24 @@ document.addEventListener("click", e => {
   }
 });
 $("#restoreFile").addEventListener("change", e => { const f = e.target.files && e.target.files[0]; if (f) restoreFrom(f); e.target.value = ""; });
+$("#addForm").addEventListener("submit", e => { e.preventDefault(); saveAdd(); });
+$("#axSlot").addEventListener("change", syncAddLabel);
+$("#addSheet").addEventListener("click", e => { if (e.target.id === "addSheet") closeAdd(); });
+document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#addSheet").hidden) closeAdd(); });
 const main = $("#main");
 main.addEventListener("input", e => { const i = e.target.closest("input[data-f]"); if (i) S.drafts[S.week + "|" + i.id] = i.value; });
 main.addEventListener("change", e => {
   const sel = e.target.closest("select[data-variant]");
-  if (sel) { if (sel.value) { UI.variant[variantKey(SLOT[sel.dataset.variant])] = sel.value; saveUI(); } render(); return; }
+  if (sel) {
+    const slot = SLOT[sel.dataset.variant], pick = sel.value;
+    if (pick === "__add__") { sel.value = ""; openAdd(slot.id); return; }
+    if (pick) {
+      UI.variant[variantKey(slot)] = pick; saveUI();
+      const usual = defaultFor(slot, UI.loc) || slot.name;
+      if (pick !== usual) toast("Swapped at " + LOCL[UI.loc] + " for this week.", "Always use", 'data-mkdef="' + UI.loc + "|" + slot.id + "|" + encodeURIComponent(pick) + '"');
+    }
+    render(); return;
+  }
   if (e.target.dataset.kit) {
     D.settings.homeKit = Array.from(document.querySelectorAll("[data-kit]:checked")).map(c => c.dataset.kit);
     save(); return;
@@ -588,7 +703,7 @@ window.addEventListener("storage", e => { if (e.key === KEY) { D = loadData(); s
 /* ================= offline + updates ================= */
 function showUpdate(){
   const t = $("#toast");
-  t.innerHTML = 'A new version is ready. <button type="button" class="linkb" id="reloadBtn" style="color:inherit;text-decoration:underline;font-size:14px">Reload</button>';
+  t.innerHTML = '<span>A new version is ready.</span> <button type="button" class="toast-act" id="reloadBtn">Reload</button>';
   t.hidden = false; clearTimeout(toastT);
 }
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
