@@ -1,7 +1,7 @@
 /* Stretch/Contraction Log — app logic. All data lives on this phone (localStorage), with JSON backup/restore. */
 (function () {
 "use strict";
-const APP_VERSION = "1.4.0";
+const APP_VERSION = "1.5.0";
 const P = window.SC_PLAN;
 const { PLAN, EXT, TIER, TIER_H } = P;
 const DEFAULT_START = P.DEFAULT_START;
@@ -76,7 +76,7 @@ function save(){
   try { localStorage.setItem(KEY, JSON.stringify(D)); }
   catch (e) { toast("Couldn't save on this phone. Export a backup from Settings now."); }
 }
-const UI = Object.assign({ tab: "week", show: "all", budget: 0, collapsed: {}, installHidden: false, keepFiled: {} },
+const UI = Object.assign({ tab: "week", show: "all", budget: 0, range: "all", collapsed: {}, installHidden: false, keepFiled: {} },
   (() => { try { return JSON.parse(localStorage.getItem(UIKEY)) || {}; } catch (e) { return {}; } })());
 ["loc", "exLoc", "lastGym", "variant"].forEach(k => delete UI[k]); // gym switches from 1.1–1.2
 const saveUI = () => { try { localStorage.setItem(UIKEY, JSON.stringify(UI)); } catch (e) {} };
@@ -173,6 +173,39 @@ function prefill(slot, i, o){
 }
 const lastTop = (v, loc) => (HIST[v] || []).find(e => e.wk < S.week && e.i === 0 && !e.dl && e.r != null && (!loc || e.loc === loc)) || null;
 const totalLogged = () => Object.values(D.weeks).reduce((a, w) => a + Object.keys((w && w.sets) || {}).length, 0);
+
+/* ================= rest between sets ================= */
+// Timed tick to tick on the same exercise, same day. It includes doing the set itself and anything done in
+// between (a superset partner). Under 20 s means sets ticked together; over 20 min means a break, not a rest.
+const MIN_GAP = 20, MAX_GAP = 1200;
+const slotOfKey = k => k.slice(0, k.lastIndexOf("_"));
+const idxOfKey = k => Number(k.slice(k.lastIndexOf("_") + 1));
+function gapBefore(sets, slotId, d, tMs, selfKey){
+  let prev = null;
+  for (const k in sets) {
+    if (k === selfKey || slotOfKey(k) !== slotId) continue;
+    const e = sets[k]; if (!e || !e.t || e.d !== d) continue;
+    const ms = Date.parse(e.t);
+    if (ms < tMs && (prev == null || ms > prev)) prev = ms;
+  }
+  if (prev == null) return null;
+  const s = Math.round((tMs - prev) / 1000);
+  return s >= MIN_GAP && s <= MAX_GAP ? s : null;
+}
+// Sets logged from 1.5 carry their rest; older ones with a tick time have it worked out the same way.
+function restOf(wk, key, e){
+  if (!e) return null;
+  if (typeof e.rest === "number") return e.rest;
+  if (e.rest === null || !e.t) return null;
+  return gapBefore(setsOf(wk), slotOfKey(key), e.d, Date.parse(e.t), key);
+}
+// What the plan implies between two ticks of one exercise: every rest in its superset plus ~45 s per set done.
+function plannedGap(slot){
+  const grp = slot.g ? SESS_OF[slot.id].slots.filter(s => s.g === slot.g) : [slot];
+  return grp.reduce((a, s) => a + s.rest + WORK_S, 0);
+}
+const median = a => { const s = a.slice().sort((x, y) => x - y), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+const fmtDiff = s => { s = Math.round(s); return (s > 0 ? "+" : s < 0 ? "−" : "±") + fmtRest(Math.abs(s)); };
 
 /* ================= rendering ================= */
 function segHTML(key, opts){
@@ -328,6 +361,173 @@ function myExHTML(){
     '<div class="btns" style="margin-top:12px"><button type="button" class="btn primary" data-addx="">Add an exercise</button></div></section>';
 }
 
+/* ================= insights: rest ================= */
+const ORDER = {}; PLAN.forEach(sess => sess.slots.forEach(s => { ORDER[s.id] = Object.keys(ORDER).length; }));
+const setLabel = (slot, i) => EXT[slot.ext].flat ? "Set " + (i + 1) : (i === 0 ? "Top" : "B" + i);
+const wLabel = (slot, w) => slot.bw ? "bodyweight" : w == null ? "no weight" : slot.added ? "+" + fmtW(w) + " kg added" : fmtW(w) + " kg";
+function timedSets(range){
+  const lo = range === "week" ? S.week : range === "4" ? addDays(S.week, -21) : "";
+  const hi = range === "all" ? "9999" : S.week;
+  const out = [];
+  Object.keys(D.weeks).forEach(wk => {
+    if (wk < lo || wk > hi) return;
+    const sets = setsOf(wk), dl = isDeload(wk);
+    Object.keys(sets).forEach(k => {
+      const e = sets[k], slot = SLOT[slotOfKey(k)]; if (!e || !slot) return;
+      const rest = restOf(wk, k, e); if (rest == null) return;
+      out.push({ wk, k, slot, i: idxOfKey(k), e, rest, dl });
+    });
+  });
+  return out;
+}
+function fitOf(pts){
+  const n = pts.length; if (n < 2) return null;
+  const mx = pts.reduce((a, p) => a + p.rest, 0) / n, my = pts.reduce((a, p) => a + p.r, 0) / n;
+  let sxx = 0, syy = 0, sxy = 0;
+  pts.forEach(p => { const dx = p.rest - mx, dy = p.r - my; sxx += dx * dx; syy += dy * dy; sxy += dx * dy; });
+  const sd = Math.sqrt(sxx / n);
+  if (sd < 10) return { r: null, why: "rest" };
+  if (syy === 0) return { r: null, why: "reps" };
+  const b = sxy / sxx;
+  return { r: sxy / Math.sqrt(sxx * syy), b, a: my - b * mx };
+}
+function readout(pts, f){
+  const n = pts.length;
+  if (n < 6) return "Needs 6 or more sets at this weight before it's worth reading (" + n + " so far).";
+  if (!f || f.why === "rest") return "Your rests here have all been about the same length, so there's nothing to compare yet.";
+  if (f.why === "reps") return "Same reps every time (" + pts[0].r + "), whatever the rest.";
+  const link = Math.abs(f.r) >= 0.5 ? "a clear link" : "a loose link";
+  if (f.r >= 0.3) {
+    const per = Math.round(f.b * 30 * 10) / 10;
+    return "More rest, more reps (" + link + "): about " + (per >= 0.1 ? "+" + per : "a fraction of a") + " rep" + (per === 1 ? "" : "s") + " per extra 30 s.";
+  }
+  if (f.r <= -0.3) return "Longer rests have come with fewer reps here (" + link + "), so something else, like fatigue or set order, is likely driving it.";
+  return "No clear link so far: your reps barely move with rest.";
+}
+function niceStep(span, steps, maxTicks){ return steps.find(s => Math.ceil(span / s) <= maxTicks) || steps[steps.length - 1]; }
+let INS = {}; // chart points per card, for the tooltips
+const CW = 320, CH = 196, CM = { l: 30, r: 14, t: 24, b: 38 };
+function scatterSVG(id, pts, f){
+  const xs = pts.map(p => p.rest), ys = pts.map(p => p.r);
+  let xmin = Math.min.apply(null, xs), xmax = Math.max.apply(null, xs);
+  const xs1 = niceStep(Math.max(xmax - xmin, 1), [15, 30, 60, 120, 300], 5);
+  let x0 = Math.floor(xmin / xs1) * xs1, x1 = Math.ceil(xmax / xs1) * xs1;
+  if (x1 === x0) { x0 = Math.max(0, x0 - xs1); x1 += xs1; }
+  let y0 = Math.max(0, Math.min.apply(null, ys) - 1), y1 = Math.max.apply(null, ys) + 1;
+  const ys1 = niceStep(y1 - y0, [1, 2, 5, 10], 6);
+  y0 = Math.floor(y0 / ys1) * ys1; y1 = Math.ceil(y1 / ys1) * ys1;
+  const X = v => CM.l + (v - x0) / (x1 - x0) * (CW - CM.l - CM.r);
+  const Y = v => CH - CM.b - (v - y0) / (y1 - y0) * (CH - CM.t - CM.b);
+  let g = "";
+  for (let v = y0; v <= y1; v += ys1) g += '<line class="grid" x1="' + CM.l + '" x2="' + (CW - CM.r) + '" y1="' + Y(v) + '" y2="' + Y(v) + '"/>' +
+    '<text x="' + (CM.l - 6) + '" y="' + (Y(v) + 4) + '" text-anchor="end">' + v + '</text>';
+  for (let v = x0; v <= x1; v += xs1) g += '<text x="' + X(v) + '" y="' + (CH - CM.b + 16) + '" text-anchor="middle">' + fmtRest(v) + '</text>';
+  g += '<text class="ax" x="2" y="12">Reps</text>' +
+    '<text class="ax" x="' + ((CM.l + CW - CM.r) / 2) + '" y="' + (CH - 4) + '" text-anchor="middle">Rest before the set (min:sec)</text>';
+  if (pts.length >= 6 && f && f.r != null) {
+    const ya = f.a + f.b * xmin, yb = f.a + f.b * xmax;
+    g += '<clipPath id="cp-' + id + '"><rect x="' + CM.l + '" y="' + CM.t + '" width="' + (CW - CM.l - CM.r) + '" height="' + (CH - CM.t - CM.b) + '"/></clipPath>' +
+      '<line class="fit" clip-path="url(#cp-' + id + ')" x1="' + X(xmin) + '" y1="' + Y(ya) + '" x2="' + X(xmax) + '" y2="' + Y(yb) + '"/>';
+  }
+  pts.forEach(p => { p.cx = X(p.rest); p.cy = Y(p.r); });
+  const latest = pts.reduce((a, p, ix) => (a < 0 || (p.e.t || "") > (pts[a].e.t || "")) ? ix : a, -1);
+  pts.forEach((p, ix) => { g += '<circle class="dot" data-i="' + ix + '" cx="' + p.cx + '" cy="' + p.cy + '" r="4.5"/>'; });
+  if (latest >= 0) {
+    const p = pts[latest], right = p.cx < CW - CM.r - 44;
+    g += '<text class="lab" x="' + (p.cx + (right ? 9 : -9)) + '" y="' + (p.cy - 7) + '" text-anchor="' + (right ? "start" : "end") + '">latest</text>';
+  }
+  pts.forEach((p, ix) => {
+    g += '<circle class="hit" data-pt="' + ix + '" cx="' + p.cx + '" cy="' + p.cy + '" r="13" tabindex="0" role="img" aria-label="' +
+      esc(p.r + " reps after " + fmtRest(p.rest) + " rest, " + setLabel(p.slot, p.i) + ", " + dateShort(p.e.d)) + '"/>';
+  });
+  return '<svg viewBox="0 0 ' + CW + ' ' + CH + '" role="group" aria-label="Reps against rest, one dot per set">' + g + '</svg>';
+}
+function insightsHTML(){
+  INS = {};
+  const range = UI.range, cur = S.week === thisWeek();
+  let html = '<div class="controls">' + segHTML("range", [["week", cur ? "This week" : "Week " + weekNo(S.week)], ["4", "4 weeks"], ["all", "All"]]) + '</div>';
+  const list = timedSets(range);
+  if (!list.length) return html + '<section class="sec"><h2>Rest</h2><p>No timed rests ' + (range === "all" ? "yet" : "in this range") +
+    '. Every set you tick records the time since your last set of that exercise, so this fills in as you train.</p></section>';
+  const devs = list.map(x => x.rest - plannedGap(x.slot)), typ = median(devs);
+  html += '<div class="stats"><div class="stat"><span class="stat-l">Sets timed</span><b class="stat-v">' + list.length + '</b></div>' +
+    '<div class="stat"><span class="stat-l">Typical rest vs plan</span><b class="stat-v">' + fmtDiff(typ) + '</b><span class="stat-d">' +
+    (Math.abs(typ) <= 30 ? "about as planned" : typ > 0 ? "longer than planned" : "shorter than planned") + '</span></div></div>';
+  // ---- rest vs plan ----
+  const bySlot = {};
+  list.forEach(x => { (bySlot[x.slot.id] = bySlot[x.slot.id] || []).push(x.rest); });
+  let rows = "";
+  PLAN.forEach(sess => {
+    const here = sess.slots.filter(s => bySlot[s.id]);
+    if (!here.length) return;
+    rows += '<tr class="grp"><th colspan="4" scope="colgroup">' + esc(sess.name) + '</th></tr>';
+    here.forEach(s => {
+      const r = bySlot[s.id], plan = plannedGap(s), yours = Math.round(median(r)), d = yours - plan;
+      const grp = s.g ? sess.slots.filter(x => x.g === s.g).length : 1;
+      rows += '<tr><th scope="row">' + esc(chosen(s).v) + '<small>' + (grp > 1 ? "superset " + s.g + " · " : "") + r.length + " set" + (r.length === 1 ? "" : "s") + '</small></th>' +
+        '<td>' + fmtRest(plan) + '</td><td>' + fmtRest(yours) + '</td>' +
+        '<td class="' + (Math.abs(d) > 30 ? "off" : "ok") + '">' + fmtDiff(d) + (Math.abs(d) > 30 ? '<small>' + (d > 0 ? "longer" : "shorter") + '</small>' : "") + '</td></tr>';
+    });
+  });
+  html += '<section class="sec"><h2>Rest vs plan</h2>' +
+    '<p>Timed from ticking one set to ticking the next set of the same exercise, so it includes the set itself and any superset partner. ' +
+    '<b>Plan</b> is the plan\'s rests plus about 45 s per set; <b>Yours</b> is your typical (middle) time.</p>' +
+    '<table class="tbl rp"><thead><tr><th scope="col">Exercise</th><th scope="col">Plan</th><th scope="col">Yours</th><th scope="col">Diff</th></tr></thead><tbody>' + rows + '</tbody></table></section>';
+  // ---- rest vs reps: back-off sets at one weight per exercise ----
+  const groups = {};
+  list.filter(x => x.i >= 1 && !x.dl && x.e.r != null).forEach(x => {
+    const vv = variantsFor(x.slot).find(v => v.n === x.e.v);
+    const machine = vv ? vv.machine : isMachineKit(x.slot.kit);
+    const loc = machine ? (x.e.loc || "work") : null;
+    const gk = x.slot.id + "|" + x.e.v + "|" + (loc || "");
+    (groups[gk] = groups[gk] || { slot: x.slot, v: x.e.v, loc, all: [] }).all.push({ slot: x.slot, i: x.i, e: x.e, rest: x.rest, r: x.e.r });
+  });
+  const cards = [], few = [];
+  Object.keys(groups).map(k => groups[k]).sort((a, b) => ORDER[a.slot.id] - ORDER[b.slot.id] || a.v.localeCompare(b.v) || String(a.loc).localeCompare(String(b.loc))).forEach(gr => {
+    const byW = {};
+    gr.all.forEach(p => { const wk = gr.slot.bw ? "bw" : String(p.e.w); (byW[wk] = byW[wk] || []).push(p); });
+    const pick = Object.keys(byW).map(k => byW[k]).sort((a, b) => b.length - a.length ||
+      (b.map(p => p.e.t || "").sort().pop() > a.map(p => p.e.t || "").sort().pop() ? 1 : -1))[0];
+    const name = gr.v + (gr.loc ? " · " + LOCN[gr.loc] : "");
+    if (pick.length < 3) { few.push(esc(name) + " (" + pick.length + ")"); return; }
+    pick.sort((a, b) => (a.e.t || "") < (b.e.t || "") ? -1 : 1);
+    const id = "c" + cards.length, f = fitOf(pick), other = gr.all.length - pick.length;
+    INS[id] = pick;
+    const trows = pick.slice().reverse().map(p => '<tr><td>' + dayShort(p.e.d) + " " + dateShort(p.e.d) + '</td><td>' + setLabel(p.slot, p.i) + '</td><td>' + fmtRest(p.rest) + '</td><td>' + p.r + '</td></tr>').join("");
+    cards.push('<div class="ins">' +
+      '<div class="ins-h"><b>' + esc(name) + '</b><small>Back-off sets at ' + esc(wLabel(gr.slot, pick[0].e.w)) + ' · ' + pick.length + ' sets' +
+        (other ? ' · ' + other + ' more at other weights not shown' : '') + '</small></div>' +
+      '<p class="readout">' + esc(readout(pick, f)) + '</p>' +
+      '<div class="chart" data-chart="' + id + '">' + scatterSVG(id, pick, f) + '<div class="tip" hidden><b></b><span></span></div></div>' +
+      '<button type="button" class="linkb" data-pts="' + id + '" aria-expanded="false" aria-controls="pts-' + id + '">Show the sets</button>' +
+      '<table class="tbl pts" id="pts-' + id + '" hidden><thead><tr><th scope="col">Day</th><th scope="col">Set</th><th scope="col">Rest</th><th scope="col">Reps</th></tr></thead><tbody>' + trows + '</tbody></table>' +
+      '</div>');
+  });
+  html += '<section class="sec"><h2>Rest vs reps</h2>' +
+    '<p>Each dot is a back-off set at the same weight. If more rest buys more reps, the dots climb to the right. It shows a link, not the cause: a tired day can mean longer rests and fewer reps.</p>' +
+    (cards.length ? cards.join("") : '<p class="note">No exercise has 3 back-off sets at one weight yet.</p>') +
+    (few.length ? '<p class="note">Filling in: ' + few.join(", ") + '.</p>' : '') + '</section>';
+  return html;
+}
+function hideTips(){
+  document.querySelectorAll(".chart .tip").forEach(t => { t.hidden = true; });
+  document.querySelectorAll('.chart .dot[r="6"]').forEach(d => d.setAttribute("r", "4.5"));
+}
+function showTip(hit){
+  const box = hit.closest(".chart"), pts = INS[box.dataset.chart], ix = Number(hit.dataset.pt), p = pts && pts[ix];
+  if (!p) return;
+  hideTips();
+  const dot = box.querySelector('.dot[data-i="' + ix + '"]'); if (dot) dot.setAttribute("r", "6");
+  const tip = box.querySelector(".tip");
+  tip.querySelector("b").textContent = p.r + " reps · " + fmtRest(p.rest) + " rest";
+  tip.querySelector("span").textContent = setLabel(p.slot, p.i) + " · " + wLabel(p.slot, p.e.w) + " · " + dayShort(p.e.d) + " " + dateShort(p.e.d);
+  tip.hidden = false;
+  const k = box.querySelector("svg").getBoundingClientRect().width / CW, tw = tip.offsetWidth, th = tip.offsetHeight;
+  const x = Math.max(0, Math.min(box.clientWidth - tw, p.cx * k - tw / 2));
+  let y = p.cy * k - th - 12; if (y < 0) y = p.cy * k + 14;
+  tip.style.left = x + "px"; tip.style.top = y + "px";
+}
+
 // Sets saved under an earlier week than the day they were ticked (the app stayed on last week after a weekend).
 function misfiled(){
   const keep = UI.keepFiled || {}, out = [];
@@ -397,6 +597,7 @@ function render(){
   document.querySelectorAll(".tabs [data-tab]").forEach(b => { if (b.dataset.tab === UI.tab) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current"); });
   let html = "";
   if (UI.tab === "settings") html = settingsHTML();
+  else if (UI.tab === "insights") html = insightsHTML();
   else {
     html += '<div class="controls">' + segHTML("show", [["all", "All"], ["todo", "To do"]]) +
       (UI.tab === "next" ? '<span class="ctl-l">Time</span>' + segHTML("budget", [[20, "20"], [30, "30"], [45, "45"], [0, "Any"]]) : '') + '</div>';
@@ -429,10 +630,13 @@ function refresh(){
     tick.setAttribute("aria-pressed", String(!!log));
     tick.setAttribute("aria-label", (log ? "Undo " : "Log ") + row.querySelector(".sl b").textContent + " set");
     row.querySelector(".sl small").textContent = log ? dayShort(log.d) : "";
-    const bits = [];
+    const bits = [], alt = [];
     if (log && log.v && log.v !== o.v) bits.push("as " + log.v);
     if (log && o.loc && (log.loc || "work") !== o.loc) bits.push("at " + LOCL[log.loc || "work"]);
-    row.querySelector(".alt").textContent = bits.length ? "Logged " + bits.join(" ") : "";
+    const rs = log ? restOf(S.week, key, log) : null;
+    if (rs != null) alt.push("Rest " + fmtRest(rs));
+    if (bits.length) alt.push((alt.length ? "logged " : "Logged ") + bits.join(" "));
+    row.querySelector(".alt").textContent = alt.join(" · ");
     row.querySelectorAll("input[data-f]").forEach(inp => {
       if (inp === active) return;
       const f = inp.dataset.f, dk = S.week + "|" + inp.id;
@@ -524,9 +728,9 @@ function onTick(key){
       return;
     }
     if (PAD.inp && row.contains(PAD.inp)) closePad(false);
-    const o = chosen(slot);
+    const o = chosen(slot), now = new Date(), d = todayISO();
     const entry = { w: slot.bw ? null : num(inp("w") && inp("w").value), r, x: inp("x") ? num(inp("x").value) : null,
-                    v: o.v, d: todayISO(), t: new Date().toISOString(), loc: o.loc };
+                    v: o.v, d, t: now.toISOString(), loc: o.loc, rest: gapBefore(sets, slot.id, d, now.getTime(), key) };
     ["w", "r", "x"].forEach(f => { const el = inp(f); if (el) delete S.drafts[S.week + "|" + el.id]; });
     putSet(S.week, key, entry);
     startRest(slot);
@@ -776,6 +980,9 @@ document.addEventListener("click", e => {
   const fld = e.target.closest("[data-fld]");
   if (fld && $("#main").contains(fld)) { openPad(fld.querySelector("input[data-f]")); return; }
   if (PAD.inp && !pad.contains(e.target)) closePad(true); // tapping anywhere else puts the pad away
+  const hit = e.target.closest(".chart .hit");
+  if (hit) { showTip(hit); return; }
+  hideTips();
   const t = e.target.closest("button"); if (!t) return;
   if (pad.contains(t)) {
     if (t.dataset.k) padKey(t.dataset.k);
@@ -798,6 +1005,11 @@ document.addEventListener("click", e => {
     const id = t.dataset.toggle; UI.collapsed[id] = !UI.collapsed[id]; saveUI();
     t.setAttribute("aria-expanded", String(!UI.collapsed[id]));
     t.nextElementSibling.hidden = !!UI.collapsed[id]; return;
+  }
+  if (t.dataset.pts) {
+    const tb = document.getElementById("pts-" + t.dataset.pts), open = tb.hidden;
+    tb.hidden = !open; t.setAttribute("aria-expanded", String(open));
+    t.textContent = open ? "Hide the sets" : "Show the sets"; return;
   }
   if (t.dataset.notes) {
     const box = document.getElementById("n-" + t.dataset.notes), open = box.hidden;
@@ -841,6 +1053,9 @@ document.addEventListener("keydown", e => {
   e.preventDefault();
 });
 const main = $("#main");
+// chart dots: keyboard focus and mouse hover show the same details as a tap
+main.addEventListener("focusin", e => { const h = e.target.closest && e.target.closest(".chart .hit"); if (h) showTip(h); });
+main.addEventListener("pointerover", e => { if (e.pointerType !== "mouse") return; const h = e.target.closest(".chart .hit"); if (h) showTip(h); });
 main.addEventListener("change", e => {
   const sel = e.target.closest("select[data-variant]");
   if (sel) {
@@ -900,7 +1115,8 @@ if ("serviceWorker" in navigator && location.protocol !== "file:") {
   });
 }
 
-if (["week", "next", "settings"].indexOf(UI.tab) < 0) UI.tab = "week";
+if (["week", "next", "insights", "settings"].indexOf(UI.tab) < 0) UI.tab = "week";
+if (["week", "4", "all"].indexOf(UI.range) < 0) UI.range = "all";
 render();
 window.__gymlog = { get data(){ return D; }, version: APP_VERSION }; // for testing/debugging
 })();

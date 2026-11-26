@@ -24,6 +24,15 @@ Weight, reps and the +P/+RP count are entered on the app's own number pad (digit
 
 The app moves to the new week by itself when it's next opened, including when iOS resumes it without a fresh load (checked on resume, focus and every 30 seconds). If you go to another week on purpose, it stays there and shows a warning that sets you tick are saved to that week. If sets were ever ticked on one week's days but saved under an earlier week, a banner offers to move them; any set already logged in its own week stays put.
 
+### Rest times
+
+Every set you tick records its rest: the time since you ticked the previous set of the same exercise that day. It runs tick to tick, so it includes doing the set itself and any superset partner. Gaps under 20 s (sets ticked together) or over 20 minutes (a break) aren't counted. The set row shows it, e.g. "Rest 2:41". Sets logged before 1.5 have their rest worked out from their tick times.
+
+**Insights** shows, for this week, the last 4 weeks or everything:
+
+- **Rest vs plan**: per exercise, the plan's time between sets (its rests in the superset plus about 45 s per set) against your typical (median) time, flagged when more than 30 s apart.
+- **Rest vs reps**: for each exercise, back-off sets at the weight you've used most, as a dot chart of reps against rest. From 3 sets it draws the chart; from 6 it adds a trend line and says whether more rest has meant more reps, and by roughly how many per extra 30 s. Tap a dot for its details; **Show the sets** lists them.
+
 ### Your own exercises
 
 **Swap > + Add your own…** on any exercise (or **Settings > My exercises > Add an exercise**): name it, say whether it's a machine or cable (then it gets Work and Home versions), and optionally switch to it straight away. Settings lists your own exercises with **Remove**.
@@ -52,7 +61,7 @@ Logged sets are keyed by exercise id (`bench_0` = bench, top set), so keep exist
 ```json
 {
   "v": 1,
-  "weeks": { "2026-11-09": { "sets": { "bench_0": { "w": 120, "r": 7, "x": null, "v": "Barbell bench press", "d": "2026-11-10", "loc": "work" } } } },
+  "weeks": { "2026-11-09": { "sets": { "bench_1": { "w": 107.5, "r": 9, "x": null, "v": "Barbell bench press", "d": "2026-11-10", "t": "2026-11-10T12:04:10.000Z", "loc": null, "rest": 190 } } } },
   "settings": {
     "blockStart": "2026-11-09",
     "custom": { "hack": [{ "n": "Belt squat", "machine": true }] },
@@ -62,4 +71,4 @@ Logged sets are keyed by exercise id (`bench_0` = bench, top set), so keep exist
 }
 ```
 
-`w` kg (added kg for pull-ups), `r` reps, `x` partials or rest-pause reps on the top set, `v` exercise actually done (plan, swap or your own), `d` date logged, `t` time logged (from 1.2), `loc` work or home. Weeks are keyed by their Monday. `loc` is `work`/`home` for machine and cable exercises and `null` for free weights (sets from 1.0–1.2 always carry a gym). Machine history is matched on `v` and `loc`; free-weight history on `v` only. `custom` holds exercises you added per slot; `choice` holds the exercise and gym picked in Swap.
+`w` kg (added kg for pull-ups), `r` reps, `x` partials or rest-pause reps on the top set, `v` exercise actually done (plan, swap or your own), `d` date logged, `t` time logged (from 1.2), `loc` work or home, `rest` seconds since the previous set of the same exercise that day (from 1.5; `null` when there wasn't one within 20 s–20 min; missing on older sets, where it's worked out from `t`). Weeks are keyed by their Monday. `loc` is `work`/`home` for machine and cable exercises and `null` for free weights (sets from 1.0–1.2 always carry a gym). Machine history is matched on `v` and `loc`; free-weight history on `v` only. `custom` holds exercises you added per slot; `choice` holds the exercise and gym picked in Swap.
