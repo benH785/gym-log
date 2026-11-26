@@ -16,6 +16,14 @@ The gym is chosen in each exercise's **Swap** list. Machine and cable exercises 
 
 What you pick stays picked until you change it; with no pick, an exercise shows whatever you last logged for it, else the plan exercise at Work. Picking only redraws that card. The programme's plan weights are work-gym numbers, so a machine exercise's Home version starts blank until you've logged it there once.
 
+### Entering numbers
+
+Weight, reps and the +P/+RP count are entered on the app's own number pad (digits, −/+ 2.5 kg or −/+ 1 rep, delete, **Next**, **Log set**). The iPhone keyboard is never used for them, which also stops iOS's Shake to Undo ("Undo Typing") popping up when you take the phone out of your pocket. Tapping a logged set's field edits it; the change saves when you tap **Done** or anywhere else.
+
+### Weeks
+
+The app moves to the new week by itself when it's next opened, including when iOS resumes it without a fresh load (checked on resume, focus and every 30 seconds). If you go to another week on purpose, it stays there and shows a warning that sets you tick are saved to that week. If sets were ever ticked on one week's days but saved under an earlier week, a banner offers to move them; any set already logged in its own week stays put.
+
 ### Your own exercises
 
 **Swap > + Add your own…** on any exercise (or **Settings > My exercises > Add an exercise**): name it, say whether it's a machine or cable (then it gets Work and Home versions), and optionally switch to it straight away. Settings lists your own exercises with **Remove**.

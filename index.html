@@ -143,11 +143,11 @@ main.wrap{padding-block:14px calc(var(--tabs-h) + env(safe-area-inset-bottom,0px
 .sl{display:grid;line-height:1.05}
 .sl b{font:700 15px var(--f-display);text-transform:uppercase}
 .sl small{font-size:11px;color:var(--done);font-weight:600}
-.fld{display:flex;align-items:center;gap:4px;height:46px;padding:0 9px;min-width:0;background:var(--bg);border:1px solid var(--line);border-radius:10px}
-.fld input{all:unset;flex:1;width:100%;min-width:0;font:600 20px/1 var(--f-display);font-variant-numeric:tabular-nums;color:var(--ink)}
+.fld{display:flex;align-items:center;gap:4px;height:46px;padding:0 9px;min-width:0;background:var(--bg);border:1px solid var(--line);border-radius:10px;cursor:pointer;-webkit-user-select:none;user-select:none}
+.fld input{all:unset;flex:1;width:100%;min-width:0;font:600 20px/1 var(--f-display);font-variant-numeric:tabular-nums;color:var(--ink);pointer-events:none;caret-color:transparent}
 .fld input::placeholder{color:var(--muted);opacity:.75;font-weight:600;font-size:17px}
 .fld span{flex:none;font:600 11px/1 var(--f-body);color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
-.fld:focus-within{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft)}
+.fld.editing{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft);background:var(--surface)}
 .bw{font:600 14px var(--f-display);color:var(--muted);text-align:center;letter-spacing:.06em}
 .tick{height:46px;border-radius:10px;border:1.5px solid var(--line);background:var(--surface);color:var(--muted);display:grid;place-items:center;padding:0}
 .tick svg{width:22px;height:22px}
@@ -157,6 +157,29 @@ main.wrap{padding-block:14px calc(var(--tabs-h) + env(safe-area-inset-bottom,0px
 .set.need .fld.r{border-color:var(--warn);box-shadow:0 0 0 2px var(--warn)}
 .set .alt{grid-column:2 / -1;font-size:11px;color:var(--muted);margin-top:-2px}
 .set .alt:empty{display:none}
+
+/* ---------- number pad ---------- */
+.pad{position:fixed;left:0;right:0;bottom:0;z-index:28;background:var(--surface);border-top:1px solid var(--line);box-shadow:0 -10px 28px rgb(0 0 0 / .18);padding-bottom:env(safe-area-inset-bottom,0px)}
+.pad .wrap{padding-block:10px 10px;display:grid;gap:8px}
+.pad-top{display:flex;align-items:center;gap:10px}
+.pad-lab{flex:1;min-width:0;line-height:1.2}
+.pad-lab b{display:block;font:600 17px/1.15 var(--f-display);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pad-lab span{font-size:12.5px;color:var(--muted)}
+.pad-val{font:700 34px/1 var(--f-display);font-variant-numeric:tabular-nums;min-width:3.5ch;text-align:right}
+.pad-val.ph{color:var(--muted);opacity:.55}
+.pad-x{flex:none;width:36px;height:36px;border-radius:9px;border:1px solid var(--line);background:var(--bg);display:grid;place-items:center;color:var(--muted)}
+.pad-x svg{width:14px;height:14px}
+.pad-keys{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}
+.pad-keys button{height:52px;border-radius:10px;border:1px solid var(--line);background:var(--bg);font:600 24px/1 var(--f-display);color:var(--ink);padding:0}
+.pad-keys button.fn{font:600 16px/1 var(--f-body);color:var(--accent)}
+.pad-keys button.go{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font:600 15px/1 var(--f-body)}
+.pad-keys button:disabled{opacity:.35}
+.pad-keys button:active:not(:disabled){transform:scale(.96)}
+body.pad-open main.wrap{padding-bottom:calc(340px + env(safe-area-inset-bottom,0px))}
+.banner.warn{background:var(--deload-soft);border:1px solid var(--deload)}
+.banner.col{flex-direction:column;align-items:stretch}
+.bbtns{display:flex;gap:8px;flex-wrap:wrap}
+.bbtns .btn{padding:10px 12px;font-size:14px}
 
 /* ---------- next-up view ---------- */
 .tier-h{font:700 14px/1 var(--f-display);text-transform:uppercase;letter-spacing:.1em;color:var(--muted);margin:20px 2px 10px}
@@ -254,6 +277,22 @@ ol.steps{margin:0;padding-left:20px;font-size:14px;line-height:1.6}
   <button id="restSkip" type="button">Skip</button>
 </div>
 <div class="toast" id="toast" hidden role="status" aria-live="polite"></div>
+
+<div class="pad" id="pad" hidden role="dialog" aria-label="Number pad">
+  <div class="wrap">
+    <div class="pad-top">
+      <div class="pad-lab"><b id="padTitle"></b><span id="padSub"></span></div>
+      <div class="pad-val" id="padVal" aria-live="polite"></div>
+      <button type="button" class="pad-x" id="padClose" aria-label="Close number pad"><svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="m2 2 10 10M12 2 2 12"/></svg></button>
+    </div>
+    <div class="pad-keys">
+      <button type="button" data-k="1">1</button><button type="button" data-k="2">2</button><button type="button" data-k="3">3</button><button type="button" class="fn" id="padMinus">−1</button>
+      <button type="button" data-k="4">4</button><button type="button" data-k="5">5</button><button type="button" data-k="6">6</button><button type="button" class="fn" id="padPlus">+1</button>
+      <button type="button" data-k="7">7</button><button type="button" data-k="8">8</button><button type="button" data-k="9">9</button><button type="button" class="fn" data-k="back" aria-label="Delete">⌫</button>
+      <button type="button" data-k="." id="padDot">.</button><button type="button" data-k="0">0</button><button type="button" class="fn" id="padNext">Next</button><button type="button" class="go" id="padGo">Log set</button>
+    </div>
+  </div>
+</div>
 
 <nav class="tabs" aria-label="Sections">
   <div class="wrap">

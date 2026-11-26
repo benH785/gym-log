@@ -1,7 +1,7 @@
 /* Stretch/Contraction Log — app logic. All data lives on this phone (localStorage), with JSON backup/restore. */
 (function () {
 "use strict";
-const APP_VERSION = "1.3.0";
+const APP_VERSION = "1.4.0";
 const P = window.SC_PLAN;
 const { PLAN, EXT, TIER, TIER_H } = P;
 const DEFAULT_START = P.DEFAULT_START;
@@ -76,7 +76,7 @@ function save(){
   try { localStorage.setItem(KEY, JSON.stringify(D)); }
   catch (e) { toast("Couldn't save on this phone. Export a backup from Settings now."); }
 }
-const UI = Object.assign({ tab: "week", show: "all", budget: 0, collapsed: {}, installHidden: false },
+const UI = Object.assign({ tab: "week", show: "all", budget: 0, collapsed: {}, installHidden: false, keepFiled: {} },
   (() => { try { return JSON.parse(localStorage.getItem(UIKEY)) || {}; } catch (e) { return {}; } })());
 ["loc", "exLoc", "lastGym", "variant"].forEach(k => delete UI[k]); // gym switches from 1.1–1.2
 const saveUI = () => { try { localStorage.setItem(UIKEY, JSON.stringify(UI)); } catch (e) {} };
@@ -88,7 +88,7 @@ function askPersist(){
   try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {}); } catch (e) {}
 }
 
-const S = { week: thisWeek(), drafts: {} };
+const S = { week: thisWeek(), drafts: {}, nav: false }; // nav: you moved to another week on purpose
 let HIST = {}, PICK = {};
 
 /* ================= derived ================= */
@@ -213,12 +213,14 @@ function setRowHTML(slot, i, ext, dl){
   const key = slot.id + "_" + i;
   const lab = ext.flat ? String(i + 1) : (i === 0 ? "Top" : "B" + i);
   const xl = (!ext.flat && i === 0 && ext.label && !dl) ? ext.label : null;
+  // Fields are filled from the app's own number pad, never the iPhone keyboard, so iOS has no typing to "Shake to Undo".
+  const ro = ' readonly tabindex="-1" inputmode="none" autocomplete="off"';
   const wf = slot.bw ? '<span class="bw">BW</span>' :
-    '<label class="fld w"><input id="w-' + key + '" data-f="w" inputmode="decimal" autocomplete="off" enterkeyhint="next" aria-label="' + lab + ' weight in kg"><span>' + (slot.added ? "+kg" : "kg") + '</span></label>';
-  const xf = xl ? '<label class="fld x"><span>' + xl + '</span><input id="x-' + key + '" data-f="x" inputmode="numeric" autocomplete="off" enterkeyhint="done" aria-label="' + xl + ' count"></label>' : '<span></span>';
+    '<div class="fld w" data-fld><input id="w-' + key + '" data-f="w"' + ro + ' aria-label="' + lab + ' weight in kg"><span>' + (slot.added ? "+kg" : "kg") + '</span></div>';
+  const xf = xl ? '<div class="fld x" data-fld><span>' + xl + '</span><input id="x-' + key + '" data-f="x"' + ro + ' aria-label="' + lab + ' ' + xl + ' count"></div>' : '<span></span>';
   return '<div class="set" data-key="' + key + '" data-slot="' + slot.id + '" data-i="' + i + '">' +
     '<span class="sl"><b>' + lab + '</b><small></small></span>' + wf +
-    '<label class="fld r"><input id="r-' + key + '" data-f="r" inputmode="numeric" autocomplete="off" enterkeyhint="done" placeholder="' + slot.lo + '–' + slot.hi + '" aria-label="' + lab + ' reps, target ' + slot.lo + ' to ' + slot.hi + '"></label>' +
+    '<div class="fld r" data-fld><input id="r-' + key + '" data-f="r"' + ro + ' placeholder="' + slot.lo + '–' + slot.hi + '" aria-label="' + lab + ' reps, target ' + slot.lo + ' to ' + slot.hi + '"></div>' +
     xf + '<button type="button" class="tick" data-tick="' + key + '" aria-label="Log ' + lab + ' set" aria-pressed="false">' + ICON_TICK + '</button>' +
     '<div class="alt"></div></div>';
 }
@@ -326,8 +328,59 @@ function myExHTML(){
     '<div class="btns" style="margin-top:12px"><button type="button" class="btn primary" data-addx="">Add an exercise</button></div></section>';
 }
 
+// Sets saved under an earlier week than the day they were ticked (the app stayed on last week after a weekend).
+function misfiled(){
+  const keep = UI.keepFiled || {}, out = [];
+  Object.keys(D.weeks).forEach(wk => {
+    const sets = setsOf(wk);
+    Object.keys(sets).forEach(k => {
+      const e = sets[k]; if (!e || !e.d) return;
+      const real = iso(mondayOf(parseISO(e.d)));
+      if (real > wk && !keep[wk + "|" + k]) out.push({ wk, k, real });
+    });
+  });
+  return out;
+}
+function moveMisfiled(){
+  let moved = 0, clash = 0;
+  UI.keepFiled = UI.keepFiled || {};
+  misfiled().forEach(m => {
+    const e = D.weeks[m.wk].sets[m.k];
+    D.weeks[m.real] = D.weeks[m.real] || { sets: {} };
+    if (D.weeks[m.real].sets[m.k]) { clash++; UI.keepFiled[m.wk + "|" + m.k] = 1; return; } // that set is already logged there
+    D.weeks[m.real].sets[m.k] = e;
+    delete D.weeks[m.wk].sets[m.k];
+    if (!Object.keys(D.weeks[m.wk].sets).length) delete D.weeks[m.wk];
+    moved++;
+  });
+  save(); saveUI();
+  S.week = thisWeek(); S.nav = false; render(); window.scrollTo(0, 0);
+  toast("Moved " + moved + " set" + (moved === 1 ? "" : "s") + (clash ? ". " + clash + " stayed put: that set was already logged in its own week." : ""));
+}
+function keepMisfiled(){
+  UI.keepFiled = UI.keepFiled || {};
+  misfiled().forEach(m => { UI.keepFiled[m.wk + "|" + m.k] = 1; });
+  saveUI(); render();
+}
+const weekRange = wk => {
+  const a = parseISO(wk), b = parseISO(addDays(wk, 6));
+  return a.getMonth() === b.getMonth() ? a.getDate() + "–" + b.getDate() + " " + MON[b.getMonth()]
+    : a.getDate() + " " + MON[a.getMonth()] + " – " + b.getDate() + " " + MON[b.getMonth()];
+};
+
 function bannersHTML(){
   let html = "";
+  const cur = thisWeek();
+  if (S.week !== cur) html += '<div class="banner warn"><span><b>' + (S.week < cur ? "This is a past week." : "This is a future week.") +
+    '</b> Sets you tick here are saved to ' + weekRange(S.week) + '.</span><button type="button" class="linkb" id="thisWk2">Go to this week</button></div>';
+  const mf = misfiled();
+  if (mf.length) {
+    const from = Array.from(new Set(mf.map(m => m.wk))), to = Array.from(new Set(mf.map(m => m.real)));
+    html += '<div class="banner warn col"><span><b>' + mf.length + ' set' + (mf.length === 1 ? " was" : "s were") + ' saved to the wrong week.</b> ' +
+      (mf.length === 1 ? "It was" : "They were") + ' ticked during ' + to.map(weekRange).join(", ") + ' but saved under ' + from.map(weekRange).join(", ") +
+      ', because the app was still showing that week.</span><span class="bbtns"><button type="button" class="btn primary" data-movefiled>Move to the right week</button>' +
+      '<button type="button" class="btn" data-keepfiled>Leave them</button></span></div>';
+  }
   const n = weekNo(S.week);
   if (isDeload(S.week)) html += '<div class="banner"><span><b>Deload week.</b> One top set per exercise at ~65% of your normal load, stopping 3 reps short. Weights below are already scaled.</span></div>';
   else if (n < 1) html += '<div class="banner info"><span>This week is before the block starts (' + dateShort(D.settings.blockStart || DEFAULT_START) + ').</span><button type="button" class="linkb" data-tab="settings">Change</button></div>';
@@ -338,6 +391,7 @@ function bannersHTML(){
 }
 
 function render(){
+  if (PAD.inp) closePad(true);
   buildHist();
   const sets = setsOf(S.week);
   document.querySelectorAll(".tabs [data-tab]").forEach(b => { if (b.dataset.tab === UI.tab) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current"); });
@@ -366,7 +420,7 @@ function rerenderSlot(id){
 function refresh(){
   buildHist();
   const sets = setsOf(S.week);
-  const active = document.activeElement;
+  const active = PAD.inp;
   document.querySelectorAll(".set[data-key]").forEach(row => {
     const key = row.dataset.key, slot = SLOT[row.dataset.slot], i = Number(row.dataset.i);
     const o = chosen(slot), log = sets[key];
@@ -430,10 +484,7 @@ function renderHeader(sets){
   sets = sets || setsOf(S.week);
   const n = weekNo(S.week);
   $("#wkN").innerHTML = (n < 1 ? "Before block" : n > 12 ? "Week " + n + " · block done" : "Week " + n + " of 12") + (isDeload(S.week) ? ' <span class="badge">Deload</span>' : "");
-  const end = addDays(S.week, 6), a = parseISO(S.week), b = parseISO(end);
-  $("#wkD").textContent = a.getMonth() === b.getMonth()
-    ? a.getDate() + "–" + b.getDate() + " " + MON[b.getMonth()]
-    : a.getDate() + " " + MON[a.getMonth()] + " – " + b.getDate() + " " + MON[b.getMonth()];
+  $("#wkD").textContent = weekRange(S.week);
   $("#thisWk").hidden = S.week === thisWeek();
   let tot = 0, dn = 0, secs = 0, today = 0;
   const td = todayISO();
@@ -468,15 +519,15 @@ function onTick(key){
   } else {
     const r = inp("r") ? num(inp("r").value) : null;
     if (r == null || r < 0) {
-      row.classList.add("need"); inp("r").focus();
+      row.classList.add("need"); openPad(inp("r"));
       setTimeout(() => row.classList.remove("need"), 1200);
       return;
     }
+    if (PAD.inp && row.contains(PAD.inp)) closePad(false);
     const o = chosen(slot);
     const entry = { w: slot.bw ? null : num(inp("w") && inp("w").value), r, x: inp("x") ? num(inp("x").value) : null,
                     v: o.v, d: todayISO(), t: new Date().toISOString(), loc: o.loc };
     ["w", "r", "x"].forEach(f => { const el = inp(f); if (el) delete S.drafts[S.week + "|" + el.id]; });
-    if (document.activeElement && row.contains(document.activeElement)) document.activeElement.blur();
     putSet(S.week, key, entry);
     startRest(slot);
     keepAwake();
@@ -491,6 +542,89 @@ function onEditDone(inputEl){
   putSet(S.week, key, Object.assign({}, log, { [f]: v }));
   refresh();
 }
+/* number pad */
+const PAD = { inp: null, fresh: true, start: "", step: 1 };
+const padOpen = () => !!PAD.inp;
+const rowFields = row => Array.from(row.querySelectorAll("input[data-f]"));
+function openPad(inp){
+  if (!inp) return;
+  if (PAD.inp && PAD.inp !== inp) commitPad();
+  PAD.inp = inp; PAD.fresh = true; PAD.start = inp.value;
+  document.querySelectorAll(".fld.editing").forEach(x => x.classList.remove("editing"));
+  inp.closest(".fld").classList.add("editing");
+  const row = inp.closest(".set"), slot = SLOT[row.dataset.slot], f = inp.dataset.f;
+  const done = row.classList.contains("done"), fields = rowFields(row);
+  $("#padTitle").textContent = chosen(slot).v;
+  $("#padSub").textContent = row.querySelector(".sl b").textContent + " · " +
+    (f === "w" ? (slot.added ? "added kg" : "kg") : f === "r" ? "reps, target " + slot.lo + "–" + slot.hi : (inp.closest(".fld").querySelector("span").textContent + " count"));
+  PAD.step = f === "w" ? 2.5 : 1;
+  $("#padMinus").textContent = "−" + fmtW(PAD.step);
+  $("#padPlus").textContent = "+" + fmtW(PAD.step);
+  $("#padDot").disabled = f !== "w";
+  $("#padNext").disabled = fields.indexOf(inp) >= fields.length - 1;
+  $("#padGo").textContent = done ? "Done" : "Log set";
+  showPadVal();
+  const pad = $("#pad");
+  pad.hidden = false; document.body.classList.add("pad-open");
+  // keep the set being edited visible above the pad
+  requestAnimationFrame(() => {
+    const r = row.getBoundingClientRect(), below = window.innerHeight - pad.offsetHeight - 10, above = $(".top").getBoundingClientRect().bottom + 8;
+    if (r.bottom > below) window.scrollBy({ top: r.bottom - below, behavior: "smooth" });
+    else if (r.top < above) window.scrollBy({ top: r.top - above, behavior: "smooth" });
+  });
+}
+function showPadVal(){
+  const v = PAD.inp.value, el = $("#padVal");
+  el.textContent = v === "" ? (PAD.inp.placeholder || "–") : v;
+  el.classList.toggle("ph", v === "");
+}
+function setPadVal(v){ PAD.inp.value = v; S.drafts[S.week + "|" + PAD.inp.id] = v; PAD.fresh = false; showPadVal(); }
+function padKey(k){
+  if (!PAD.inp) return;
+  const f = PAD.inp.dataset.f;
+  let v = PAD.fresh ? "" : PAD.inp.value;
+  if (k === "back") v = PAD.inp.value.slice(0, -1);
+  else if (k === ".") { if (f !== "w" || v.indexOf(".") >= 0) return; v = (v || "0") + "."; }
+  else {
+    const [a, b] = v.split(".");
+    if (b != null ? b.length >= 2 : (a || "").length >= 3) return;
+    v = (v === "0" ? "" : v) + k;
+  }
+  setPadVal(v);
+}
+function padAdjust(sign){
+  if (!PAD.inp) return;
+  const slot = SLOT[PAD.inp.closest(".set").dataset.slot];
+  const cur = num(PAD.inp.value);
+  const n = cur == null ? (PAD.inp.dataset.f === "r" ? slot.lo : 0) : Math.max(0, cur + sign * PAD.step);
+  setPadVal(fmtW(n));
+  PAD.fresh = true; // typing straight after −/+ starts a new number rather than adding digits to this one
+}
+// edits to an already-logged set are saved when you leave the field
+function commitPad(){
+  const inp = PAD.inp; if (!inp) return;
+  if (inp.value !== PAD.start && inp.closest(".set").classList.contains("done")) onEditDone(inp);
+}
+function closePad(commit){
+  if (!PAD.inp) return;
+  if (commit !== false) commitPad();
+  document.querySelectorAll(".fld.editing").forEach(x => x.classList.remove("editing"));
+  PAD.inp = null;
+  $("#pad").hidden = true; document.body.classList.remove("pad-open");
+  if (renderLater) { renderLater = false; render(); }
+}
+function padNext(){
+  if (!PAD.inp) return;
+  const fields = rowFields(PAD.inp.closest(".set")), i = fields.indexOf(PAD.inp);
+  if (i < fields.length - 1) openPad(fields[i + 1]);
+}
+function padGo(){
+  if (!PAD.inp) return;
+  const row = PAD.inp.closest(".set");
+  if (row.classList.contains("done")) { closePad(true); return; }
+  onTick(row.dataset.key);
+}
+
 function pickOption(slot, key){
   const o = optionsFor(slot).find(x => optKey(x) === key); if (!o) return;
   D.settings.choice[slot.id] = { v: o.v, loc: o.loc };
@@ -498,7 +632,8 @@ function pickOption(slot, key){
 }
 
 /* rest timer */
-let restEnd = 0, restTimer = null, restHide = null;
+let restEnd = 0, restTimer = null, restHide = null, restHideAt = 0;
+function hideRest(){ clearInterval(restTimer); clearTimeout(restHide); restEnd = 0; restHideAt = 0; $("#rest").hidden = true; }
 function startRest(slot){
   const sess = SESS_OF[slot.id];
   let nextTxt = "Next set";
@@ -514,11 +649,13 @@ function startRest(slot){
   if (slot.rest <= 0) {
     $("#restH").textContent = "Superset"; $("#restT").textContent = "Go";
     box.classList.add("go");
-    restHide = setTimeout(() => { box.hidden = true; }, 4000);
+    restEnd = 0; restHideAt = Date.now() + 4000;
+    restHide = setTimeout(hideRest, 4000);
     return;
   }
   $("#restH").textContent = "Rest";
   restEnd = Date.now() + slot.rest * 1000;
+  restHideAt = restEnd + 6000;
   tickRest();
   restTimer = setInterval(tickRest, 250);
 }
@@ -529,7 +666,7 @@ function tickRest(){
     clearInterval(restTimer);
     $("#rest").classList.add("go"); $("#restH").textContent = "Rest over";
     clearTimeout(restHide);
-    restHide = setTimeout(() => { $("#rest").hidden = true; }, 6000);
+    restHide = setTimeout(hideRest, Math.max(0, restHideAt - Date.now()));
   }
 }
 let wakeLock = null;
@@ -631,14 +768,28 @@ function restoreFrom(file){
   rd.readAsText(file);
 }
 
-const mainFocused = () => { const a = document.activeElement; return a && a.tagName === "INPUT" && a.dataset.f && $("#main").contains(a); };
 let renderLater = false;
-function safeRender(){ if (mainFocused()) renderLater = true; else render(); }
+function safeRender(){ if (padOpen()) renderLater = true; else render(); }
 
 document.addEventListener("click", e => {
+  const pad = $("#pad");
+  const fld = e.target.closest("[data-fld]");
+  if (fld && $("#main").contains(fld)) { openPad(fld.querySelector("input[data-f]")); return; }
+  if (PAD.inp && !pad.contains(e.target)) closePad(true); // tapping anywhere else puts the pad away
   const t = e.target.closest("button"); if (!t) return;
+  if (pad.contains(t)) {
+    if (t.dataset.k) padKey(t.dataset.k);
+    else if (t.id === "padMinus") padAdjust(-1);
+    else if (t.id === "padPlus") padAdjust(1);
+    else if (t.id === "padNext") padNext();
+    else if (t.id === "padGo") padGo();
+    else if (t.id === "padClose") closePad(true);
+    return;
+  }
   if (t.dataset.tick) { onTick(t.dataset.tick); return; }
-  if (t.dataset.tab) { UI.tab = t.dataset.tab; saveUI(); render(); window.scrollTo(0, 0); return; }
+  if (t.dataset.tab) { closePad(true); UI.tab = t.dataset.tab; saveUI(); render(); window.scrollTo(0, 0); return; }
+  if (t.hasAttribute("data-movefiled")) { moveMisfiled(); return; }
+  if (t.hasAttribute("data-keepfiled")) { keepMisfiled(); return; }
   if (t.dataset.set) {
     const p = t.dataset.set.split(":"), k = p[0], v = k === "budget" ? Number(p[1]) : p[1];
     UI[k] = v; saveUI(); render(); return;
@@ -655,19 +806,20 @@ document.addEventListener("click", e => {
   if (t.hasAttribute("data-addx")) { openAdd(t.dataset.addx); return; }
   if (t.dataset.rmx) { const p = t.dataset.rmx.split("|"); removeCustom(p[0], Number(p[1])); return; }
   switch (t.id) {
-    case "prevWk": S.week = addDays(S.week, -7); render(); break;
-    case "nextWk": S.week = addDays(S.week, 7); render(); break;
-    case "thisWk": S.week = thisWeek(); render(); break;
+    case "prevWk": S.week = addDays(S.week, -7); S.nav = S.week !== thisWeek(); render(); break;
+    case "nextWk": S.week = addDays(S.week, 7); S.nav = S.week !== thisWeek(); render(); break;
+    case "thisWk": case "thisWk2": S.week = thisWeek(); S.nav = false; render(); window.scrollTo(0, 0); break;
     case "hideInstall": UI.installHidden = true; saveUI(); render(); break;
     case "exportBtn": exportData(); break;
     case "restoreBtn": $("#restoreFile").click(); break;
     case "axCancel": closeAdd(); break;
     case "reloadBtn": location.reload(); break;
-    case "restSkip": clearInterval(restTimer); clearTimeout(restHide); $("#rest").hidden = true; break;
+    case "restSkip": hideRest(); break;
     case "restAdd":
       clearTimeout(restHide);
       if (restEnd > Date.now()) restEnd += 15000;
       else { restEnd = Date.now() + 15000; $("#rest").classList.remove("go"); $("#restH").textContent = "Rest"; clearInterval(restTimer); restTimer = setInterval(tickRest, 250); }
+      restHideAt = restEnd + 6000;
       tickRest(); break;
   }
 });
@@ -675,9 +827,20 @@ $("#restoreFile").addEventListener("change", e => { const f = e.target.files && 
 $("#addForm").addEventListener("submit", e => { e.preventDefault(); saveAdd(); });
 $("#axSlot").addEventListener("change", syncAdd);
 $("#addSheet").addEventListener("click", e => { if (e.target.id === "addSheet") closeAdd(); });
-document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#addSheet").hidden) closeAdd(); });
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && !$("#addSheet").hidden) { closeAdd(); return; }
+  if (!PAD.inp) return;
+  // a hardware keyboard (or desktop) can drive the pad too
+  if (/^[0-9]$/.test(e.key)) padKey(e.key);
+  else if (e.key === "." || e.key === ",") padKey(".");
+  else if (e.key === "Backspace") padKey("back");
+  else if (e.key === "Enter") padGo();
+  else if (e.key === "Tab") padNext();
+  else if (e.key === "Escape") closePad(true);
+  else return;
+  e.preventDefault();
+});
 const main = $("#main");
-main.addEventListener("input", e => { const i = e.target.closest("input[data-f]"); if (i) S.drafts[S.week + "|" + i.id] = i.value; });
 main.addEventListener("change", e => {
   const sel = e.target.closest("select[data-variant]");
   if (sel) {
@@ -692,26 +855,30 @@ main.addEventListener("change", e => {
     e.target.value = D.settings.blockStart;
     save(); renderHeader(); return;
   }
-  const inp = e.target.closest("input[data-f]"); if (inp) onEditDone(inp);
 });
-main.addEventListener("keydown", e => {
-  if (e.key !== "Enter") return;
-  const inp = e.target.closest("input[data-f]"); if (!inp) return;
-  e.preventDefault();
-  const row = inp.closest(".set");
-  if (row && !row.classList.contains("done")) onTick(row.dataset.key); else inp.blur();
-});
-main.addEventListener("focusout", () => { setTimeout(() => { if (renderLater && !mainFocused()) { renderLater = false; render(); } }, 0); });
 
-let shownWeek = S.week; // follow into a new week if you were on the current one when the app was last open
-document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState !== "visible") return;
+/* coming back to the app */
+// Move to the new week unless you deliberately went to another week. iOS doesn't always report the app
+// coming back to the front, so this also runs on focus, on pageshow and every 30 seconds.
+function checkWeek(){
   const now = thisWeek();
-  if (now !== shownWeek) { if (S.week === shownWeek) { S.week = now; safeRender(); } shownWeek = now; }
-  if (wakeLock === null && !$("#rest").hidden) keepAwake();
-  if (restEnd > Date.now()) tickRest();
-  refresh();
-});
+  if (S.week !== now && !S.nav) { S.week = now; safeRender(); return true; }
+  return false;
+}
+function onResume(){
+  if (checkWeek()) return;
+  const box = $("#rest"), t = Date.now();
+  if (!box.hidden) {
+    if (restEnd > t) { tickRest(); clearInterval(restTimer); restTimer = setInterval(tickRest, 250); }
+    else if (t >= restHideAt) hideRest(); // it ran out while the phone was locked
+  }
+  if (wakeLock === null && !box.hidden) keepAwake();
+  if (!padOpen()) refresh();
+}
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") onResume(); });
+window.addEventListener("pageshow", onResume);
+window.addEventListener("focus", onResume);
+setInterval(() => { if (document.visibilityState === "visible") onResume(); }, 30000);
 window.addEventListener("storage", e => { if (e.key === KEY) { D = loadData(); safeRender(); } });
 
 /* ================= offline + updates ================= */
